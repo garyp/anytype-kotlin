@@ -226,6 +226,7 @@ dependencies {
     implementation project(':feature-search')
     implementation project(':feature-create-object')
     implementation project(':feature-os-widgets')
+    implementation project(':agent-bridge')
 
     //Compile time dependencies
     ksp libs.daggerCompiler

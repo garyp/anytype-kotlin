@@ -63,6 +63,12 @@ object AgentBridge {
     @Volatile
     internal var approvedAnywhereOverride: ApprovedAnywhere? = null
 
+    /**
+     * Call exactly once per process, synchronously in `Application.onCreate` (on API 35+), so no
+     * bind can arrive before the ports exist. A second call drops the controller without closing
+     * the listener it opened. The ports must be cheap to construct: their methods are called off
+     * the main thread, so do the I/O there, not here.
+     */
     fun install(gateway: LocalApiGateway, launcher: AccountLauncher, spaces: SpaceDirectory) {
         synchronized(lock) {
             this.gateway = gateway

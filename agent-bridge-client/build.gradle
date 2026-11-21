@@ -12,6 +12,15 @@ android {
     // Tasks 7 and 13 must use the same value.
     compileSdk { version = release(37) { minorApiLevel = 2 } }
 
+    // The module uses no API above 36 (it compiles cleanly at compileSdk 36), so a consumer such
+    // as :app, which compiles at 36, may depend on it. Without this, AGP's AAR metadata check
+    // demands that every consumer compile at 37.
+    defaultConfig {
+        aarMetadata {
+            minCompileSdk = 36
+        }
+    }
+
     buildFeatures {
         aidl = true
     }
