@@ -121,7 +121,12 @@ class AgentBridgeServiceTest {
     }
 
     private fun approve(uid: Int) {
-        approved[uid] = Approval("A", "com.x", "abcdef", Access.READ_WRITE, Grant.ALL, 1L)
+        val a = Approval("A", "com.x", "abcdef", Access.READ_WRITE, Grant.ALL, 1L)
+        approved[uid] = a
+        // Connect re-checks the store before handing out a key.
+        val store = AgentApprovals(ApplicationProvider.getApplicationContext())
+        store.approve(a)
+        store.clearPendingRevoke("A", "com.x")
     }
 
     private fun listenCalls() = synchronized(gateway) { gateway.listenCalls.toList() }

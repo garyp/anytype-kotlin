@@ -108,6 +108,18 @@ class BridgeController(
                 return@withContext apiFailed("key", e)
             }
 
+            // 5b. Defence in depth: the approval may have gone since step 2. Never hand out a
+            // key for an approval that no longer exists; revoke what step 5 minted or reused.
+            val current = approvals.find(account.id, approval.packageName)
+            if (current == null || current.certSha256 != approval.certSha256) {
+                try {
+                    revokeKeysOf(approval.packageName)
+                } catch (e: Exception) {
+                    Log.w(TAG, "revoke after a withdrawn approval failed", e)
+                }
+                return@withContext ConnectResult.ApprovalRequired
+            }
+
             // 6.
             ConnectResult.Ready("http://$addr", key)
         }
@@ -143,6 +155,47 @@ class BridgeController(
         }
         callerFailure?.let { throw it }
         return apps
+    }
+
+    /**
+     * Withdraws [pkg]'s approval for [accountId] and, when that account runs, revokes every key
+     * of the package: heart rejects a revoked key at once, which cuts off a connected agent.
+     * Runs under the connect mutex, so no connect that passed its approval check is mid-way to
+     * minting a key. The pending entry (queued by the revoke) is cleared only when every key
+     * revoke succeeded. Returns true when the keys were revoked now; false leaves the pending
+     * entry for the next connect's sweep.
+     */
+    suspend fun revokeAgent(accountId: String, pkg: String): Boolean = mutex.withLock {
+        withContext(dispatcher) {
+            approvals.revoke(accountId, pkg)
+            if (launcher.runningAccount()?.id != accountId) return@withContext false
+            try {
+                if (revokeKeysOf(pkg)) {
+                    approvals.clearPendingRevoke(accountId, pkg)
+                    true
+                } else {
+                    false
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "listing keys failed", e)
+                false
+            }
+        }
+    }
+
+    /** Revokes every gateway key named for [pkg]; false when any single revoke failed. */
+    private fun revokeKeysOf(pkg: String): Boolean {
+        val prefix = KeyNames.prefix(pkg)
+        var ok = true
+        gateway.listApps().filter { it.appName.startsWith(prefix) }.forEach {
+            try {
+                gateway.revokeApp(it.appHash)
+            } catch (e: Exception) {
+                Log.w(TAG, "revoke of ${it.appName} failed", e)
+                ok = false
+            }
+        }
+        return ok
     }
 
     private fun ensureListening(): String {

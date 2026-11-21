@@ -5,7 +5,10 @@ import androidx.test.core.app.ApplicationProvider
 import io.anytype.agentbridge.IAgentBridgeCallback
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -50,7 +53,11 @@ class BridgeControllerTest {
 
         override fun listApps(): List<GatewayApp> = apps.toList()
 
+        @Volatile
+        var onCreate: (() -> Unit)? = null
+
         override fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): GatewayApp {
+            onCreate?.invoke()
             created.add(Triple(name, readWrite, spaceIds))
             return add(name)
         }
@@ -141,6 +148,66 @@ class BridgeControllerTest {
         )
 
     private val keyName = KeyNames.name("com.x", "abcdef0123456789")
+
+    @Test
+    fun revokeAgentRemovesApprovalAndKeysAndClearsPending() = runTest {
+        approve(1000, approval())
+        gateway.add(keyName)
+        gateway.add(KeyNames.prefix("com.x") + "old")
+        gateway.add(KeyNames.name("com.y", "abcdef0123456789"))
+        assertTrue(controller().revokeAgent("A", "com.x"))
+        assertEquals(listOf(KeyNames.name("com.y", "abcdef0123456789")), gateway.apps.map { it.appName })
+        assertEquals(null, approvals.find("A", "com.x"))
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+    }
+
+    @Test
+    fun revokeAgentKeepsPendingWhenRevokeFailsOrAccountStopped() = runTest {
+        approve(1000, approval())
+        gateway.add(keyName)
+        gateway.failRevoke = true
+        assertEquals(false, controller().revokeAgent("A", "com.x"))
+        assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
+        gateway.failRevoke = false
+        launcher.account = null
+        assertEquals(false, controller().revokeAgent("A", "com.x"))
+        assertEquals(1, gateway.apps.size)
+        assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
+    }
+
+    @Test
+    fun revokeDuringConnectLeavesNoKey() = runBlocking {
+        approve(1000, approval())
+        val inCreate = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        gateway.onCreate = { inCreate.countDown(); release.await(5, TimeUnit.SECONDS) }
+        val c = BridgeController(
+            gateway = gateway, launcher = launcher, approvals = approvals,
+            callerCheck = CallerCheck { uid, accountId -> approved[uid to accountId] },
+            approvedAnywhere = ApprovedAnywhere { true },
+            idle = { false }, probe = { true }, dispatcher = Dispatchers.IO
+        )
+        val connect = async(Dispatchers.Default) { c.connect(1000) }
+        assertTrue(inCreate.await(5, TimeUnit.SECONDS))
+        val revoke = async(Dispatchers.Default) { c.revokeAgent("A", "com.x") }
+        Thread.sleep(200)
+        release.countDown()
+        connect.await()
+        assertTrue(revoke.await())
+        assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.x")) })
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+    }
+
+    @Test
+    fun approvalWithdrawnBeforeReadyRevokesKeyAndRequiresApproval() = runTest {
+        // The caller check passes (stale), but the store no longer has the approval.
+        approved[1000 to "A"] = approval()
+        approvals.approve(approval())
+        approvals.revoke("A", "com.x")
+        val r = controller().connect(1000)
+        assertEquals(BridgeController.ConnectResult.ApprovalRequired, r)
+        assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.x")) })
+    }
 
     @Test
     fun unapprovedCallerGetsApprovalRequiredAndNoKey() = runTest {

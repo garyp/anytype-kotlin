@@ -138,7 +138,7 @@ class AgentAccessActivity : ComponentActivity() {
         ui = UiState(loading = false, rows = ui.rows, busy = ui.busy + pkg)
         lifecycleScope.launch {
             try {
-                withContext(Dispatchers.IO) { revoke(acc, pkg) }
+                revoke(acc, pkg)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -150,28 +150,17 @@ class AgentAccessActivity : ComponentActivity() {
     }
 
     /**
-     * The approval goes first, so a failure below never leaves the app approved. Keys are
-     * revoked only while the account runs; otherwise the pending entry stays for the next connect.
+     * Goes through the [com.anytypeio.anytype.agentbridge.BridgeController], which serializes
+     * it with connects: a connect already past its approval check cannot mint a key after the
+     * revoke. Without a controller (bridge not installed) only the approval is removed and the
+     * pending revoke stays queued.
      */
-    private fun revoke(accountId: String, pkg: String) {
-        approvals.revoke(accountId, pkg)
-        val gateway = AgentBridge.gateway ?: return
-        val launcher = AgentBridge.launcher ?: return
-        if (launcher.runningAccount()?.id != accountId) return
-        try {
-            var failed = false
-            val prefix = KeyNames.prefix(pkg)
-            gateway.listApps().filter { it.appName.startsWith(prefix) }.forEach {
-                try {
-                    gateway.revokeApp(it.appHash)
-                } catch (e: Exception) {
-                    Log.w(TAG, "revoke of a key failed", e)
-                    failed = true
-                }
-            }
-            if (!failed) approvals.clearPendingRevoke(accountId, pkg)
-        } catch (e: Exception) {
-            Log.w(TAG, "listing keys failed", e)
+    private suspend fun revoke(accountId: String, pkg: String) {
+        val controller = AgentBridge.controller(applicationContext)
+        if (controller == null) {
+            withContext(Dispatchers.IO) { approvals.revoke(accountId, pkg) }
+        } else {
+            controller.revokeAgent(accountId, pkg)
         }
     }
 
