@@ -51,6 +51,11 @@ Android APIs and review turned up.
 - **Old Android versions:** anything below Android 15 (API 35). The bridge stays off there.
 - **Choosing spaces at consent:** a grant covers every space. Access level is the only choice
   (see below).
+- **Release builds of the fork:** the user starts with the debug build
+  (`io.anytype.app.dev`, which installs beside the Play Store app). Only cheap release-readiness
+  is in scope: R8 keep rules for the new code.
+- **Filing the upstream heart fix:** the builder drafts an issue; the user decides whether to
+  file it.
 - **Upstreaming:** possible later. The module boundary keeps that door open, but no upstream PR
   is part of this work.
 - **AppFunctions:** calling another app's AppFunctions still needs allowlisting, so a third-party
@@ -60,8 +65,14 @@ Android APIs and review turned up.
 
 These would make the work a failure even if it technically works.
 
-- **Exposure:** any app other than one the user approved gets a usable key or learns anything
-  beyond "approval required".
+- **Exposure:** any app other than one the user approved gets a usable key, or learns anything
+  over Binder beyond "approval required".
+  - **Scope note:** while an agent is connected, heart's port on 127.0.0.1 is reachable by any
+    local app. Without a key, such an app gets only 401/403 and the `Anytype-Version` header.
+  - Heart's key-less pairing-challenge endpoint can't complete, because the Android app never
+    shows the approval it would need.
+  - This is accepted and documented. Tests assert that key-less REST and MCP calls are
+    rejected.
 - **Listening on a non-loopback interface,** or leaving the listener open while no agent is
   bound.
 - **Changing the normal Anytype app's behaviour** for users who never use an agent: no new
