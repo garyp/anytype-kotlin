@@ -51,6 +51,7 @@ class AgentBridgeServiceTest {
     private class FakeLauncher : AccountLauncher {
         override fun runningAccount() = AccountRef("A", "Alice")
         override suspend fun ensureStarted() = AccountRef("A", "Alice")
+        override fun generation() = 1L
     }
 
     private class FakeSpaces : SpaceDirectory {

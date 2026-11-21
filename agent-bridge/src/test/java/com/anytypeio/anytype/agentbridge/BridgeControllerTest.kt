@@ -7,10 +7,13 @@ import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -83,6 +86,10 @@ class BridgeControllerTest {
 
         override fun runningAccount(): AccountRef? = account
 
+        /** Bumped by a test to simulate an account restart. */
+        var generation = 1L
+        override fun generation() = generation
+
         /** Real starts only: calls that found no running account. */
         var realStarts = 0
         var startDelayMs = 0L
@@ -144,7 +151,8 @@ class BridgeControllerTest {
             approvedAnywhere = ApprovedAnywhere { uid -> approved.keys.any { it.first == uid } },
             idle = { !bound },
             probe = { addr -> probed.add(addr); probeResult },
-            dispatcher = dispatcher
+            dispatcher = dispatcher,
+            retryScope = backgroundScope
         )
 
     private val keyName = KeyNames.name("com.x", "abcdef0123456789")
@@ -155,7 +163,7 @@ class BridgeControllerTest {
         gateway.add(keyName)
         gateway.add(KeyNames.prefix("com.x") + "old")
         gateway.add(KeyNames.name("com.y", "abcdef0123456789"))
-        assertTrue(controller().revokeAgent("A", "com.x"))
+        assertEquals(BridgeController.RevokeOutcome.REVOKED, controller().revokeAgent("A", "com.x"))
         assertEquals(listOf(KeyNames.name("com.y", "abcdef0123456789")), gateway.apps.map { it.appName })
         assertEquals(null, approvals.find("A", "com.x"))
         assertTrue(approvals.pendingRevokes("A").isEmpty())
@@ -166,11 +174,11 @@ class BridgeControllerTest {
         approve(1000, approval())
         gateway.add(keyName)
         gateway.failRevoke = true
-        assertEquals(false, controller().revokeAgent("A", "com.x"))
+        assertEquals(BridgeController.RevokeOutcome.RETRYING, controller().revokeAgent("A", "com.x"))
         assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
         gateway.failRevoke = false
         launcher.account = null
-        assertEquals(false, controller().revokeAgent("A", "com.x"))
+        assertEquals(BridgeController.RevokeOutcome.DEFERRED, controller().revokeAgent("A", "com.x"))
         assertEquals(1, gateway.apps.size)
         assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
     }
@@ -185,7 +193,8 @@ class BridgeControllerTest {
             gateway = gateway, launcher = launcher, approvals = approvals,
             callerCheck = CallerCheck { uid, accountId -> approved[uid to accountId] },
             approvedAnywhere = ApprovedAnywhere { true },
-            idle = { false }, probe = { true }, dispatcher = Dispatchers.IO
+            idle = { false }, probe = { true }, dispatcher = Dispatchers.IO,
+            retryScope = CoroutineScope(Dispatchers.IO)
         )
         val connect = async(Dispatchers.Default) { c.connect(1000) }
         assertTrue(inCreate.await(5, TimeUnit.SECONDS))
@@ -193,7 +202,7 @@ class BridgeControllerTest {
         Thread.sleep(200)
         release.countDown()
         connect.await()
-        assertTrue(revoke.await())
+        assertEquals(BridgeController.RevokeOutcome.REVOKED, revoke.await())
         assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.x")) })
         assertTrue(approvals.pendingRevokes("A").isEmpty())
     }
@@ -207,6 +216,30 @@ class BridgeControllerTest {
         val r = controller().connect(1000)
         assertEquals(BridgeController.ConnectResult.ApprovalRequired, r)
         assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.x")) })
+    }
+
+    @Test
+    fun narrowerReapprovalDuringConnectDoesNotReturnBroaderKey() = runTest {
+        approve(1000, approval())
+        // While the key is minted under the broad approval, the user re-approves the same
+        // package and cert with a narrower grant.
+        gateway.onCreate = {
+            gateway.onCreate = null
+            approvals.approve(approval(access = Access.READ_ONLY, grant = Grant(false, listOf("s1"))))
+        }
+        val r = controller().connect(1000)
+        assertEquals(BridgeController.ConnectResult.ApprovalRequired, r)
+        assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.x")) })
+    }
+
+    @Test
+    fun sameApprovalWithNewDateDuringConnectStillReady() = runTest {
+        approve(1000, approval())
+        gateway.onCreate = {
+            gateway.onCreate = null
+            approvals.approve(approval().copy(approvedAt = 99L))
+        }
+        assertIs<BridgeController.ConnectResult.Ready>(controller().connect(1000))
     }
 
     @Test
@@ -466,9 +499,126 @@ class BridgeControllerTest {
             approvedAnywhere = { true },
             idle = { false },
             probe = { true },
-            dispatcher = StandardTestDispatcher(testScheduler)
+            dispatcher = StandardTestDispatcher(testScheduler),
+            retryScope = backgroundScope
         )
         val e = assertIs<BridgeController.ConnectResult.Error>(c.connect(1000))
         assertEquals(IAgentBridgeCallback.API_FAILED, e.code)
+    }
+
+    @Test
+    fun accountRestartRebindsEvenWhenOldPortAnswers() = runTest {
+        approve(1000, approval())
+        val c = controller()
+        val first = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
+        assertEquals("http://127.0.0.1:40000", first.baseUrl)
+        // Heart dropped the listener on an account restart; another app now answers on the old
+        // port, so the probe succeeds. The old address must never be handed out.
+        launcher.generation++
+        probeResult = true
+        val second = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
+        assertEquals("http://127.0.0.1:40001", second.baseUrl)
+        assertEquals(listOf(BridgeController.LISTEN, BridgeController.LISTEN), gateway.listenCalls)
+        // Same generation again: the new address is reused.
+        val third = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
+        assertEquals(second.baseUrl, third.baseUrl)
+        assertEquals(2, gateway.listenCalls.size)
+    }
+
+    @Test
+    fun failedRevokeIsRetriedInBackgroundUntilDone() = runTest {
+        approve(1000, approval())
+        gateway.add(keyName)
+        gateway.failRevoke = true
+        val c = controller()
+        assertEquals(BridgeController.RevokeOutcome.RETRYING, c.revokeAgent("A", "com.x"))
+        advanceTimeBy(BridgeController.RETRY_START_MS + 1)
+        runCurrent()
+        assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
+        gateway.failRevoke = false
+        advanceTimeBy(2 * BridgeController.RETRY_START_MS + 1)
+        runCurrent()
+        assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.x")) })
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+    }
+
+    @Test
+    fun revokeRetryStopsWhenAccountStops() = runTest {
+        approve(1000, approval())
+        gateway.add(keyName)
+        gateway.failRevoke = true
+        val c = controller()
+        assertEquals(BridgeController.RevokeOutcome.RETRYING, c.revokeAgent("A", "com.x"))
+        launcher.account = null
+        gateway.failRevoke = false
+        advanceTimeBy(BridgeController.RETRY_MAX_MS * 4)
+        runCurrent()
+        // Nothing swept while the account was stopped; the entry waits for the next connect.
+        assertEquals(1, gateway.apps.size)
+        assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
+    }
+
+    @Test
+    fun revokedAgentConnectSweepsPendingWithoutStartingAccount() = runTest {
+        gateway.add(keyName)
+        approvals.approve(approval())
+        approvals.revoke("A", "com.x") // approved nowhere now, key still valid
+        val r = controller().connect(1000)
+        assertEquals(BridgeController.ConnectResult.ApprovalRequired, r)
+        assertEquals(0, launcher.startCalls)
+        assertTrue(gateway.apps.isEmpty())
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+        assertTrue(gateway.listenCalls.isEmpty())
+    }
+
+    @Test
+    fun revokedAgentConnectWithAccountStoppedTouchesNothing() = runTest {
+        launcher.account = null
+        gateway.add(keyName)
+        approvals.approve(approval())
+        approvals.revoke("A", "com.x")
+        assertEquals(BridgeController.ConnectResult.ApprovalRequired, controller().connect(1000))
+        assertEquals(0, launcher.startCalls)
+        assertEquals(1, gateway.apps.size)
+        assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
+    }
+
+    @Test
+    fun callerUnapprovedForThisAccountStillSweeps() = runTest {
+        approve(1000, approval(account = "B"))
+        gateway.add(KeyNames.name("com.gone", "abcdef0123456789"))
+        approvals.approve(approval(pkg = "com.gone"))
+        approvals.revoke("A", "com.gone")
+        assertEquals(BridgeController.ConnectResult.ApprovalRequired, controller().connect(1000))
+        assertTrue(gateway.apps.isEmpty())
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+        assertTrue(gateway.listenCalls.isEmpty())
+    }
+
+    @Test
+    fun unbindSweepsPending() = runTest {
+        gateway.add(KeyNames.name("com.gone", "abcdef0123456789"))
+        approvals.approve(approval(pkg = "com.gone"))
+        approvals.revoke("A", "com.gone")
+        bound = false
+        controller().onAllUnbound()
+        assertTrue(gateway.apps.isEmpty())
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+    }
+
+    @Test
+    fun failedSweepOfOtherPackageIsRetried() = runTest {
+        approve(1000, approval())
+        gateway.add(KeyNames.name("com.gone", "abcdef0123456789"))
+        approvals.approve(approval(pkg = "com.gone"))
+        approvals.revoke("A", "com.gone")
+        gateway.failRevoke = true
+        assertIs<BridgeController.ConnectResult.Ready>(controller().connect(1000))
+        assertEquals(setOf("com.gone"), approvals.pendingRevokes("A"))
+        gateway.failRevoke = false
+        advanceTimeBy(BridgeController.RETRY_START_MS + 1)
+        runCurrent()
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+        assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.gone")) })
     }
 }

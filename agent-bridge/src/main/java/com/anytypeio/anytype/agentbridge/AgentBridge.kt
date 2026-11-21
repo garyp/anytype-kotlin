@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 
 /**
  * Process-wide entry point of the agent bridge. The app calls [install] once its middleware
@@ -52,6 +53,7 @@ object AgentBridge {
     @Volatile
     internal var unbindDispatcher: CoroutineDispatcher = Dispatchers.IO
 
+    /** Runs unbind closes and revoke retries; outlives every service and screen. */
     internal val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** Test seams: replace the [CallerVerifier]-backed checks. */
@@ -97,7 +99,8 @@ object AgentBridge {
                 ?: ApprovedAnywhere { uid -> verifier.approvedAnywhere(uid) },
             probe = ::probe,
             dispatcher = Dispatchers.IO,
-            idle = ::idle
+            idle = ::idle,
+            retryScope = backgroundScope
         ).also { controller = it }
     }
 
@@ -124,6 +127,8 @@ object AgentBridge {
         approvedAnywhereOverride = null
         unbindDispatcher = Dispatchers.IO
         activeBindings.set(0)
+        // Revoke retries of an earlier test's controller would sweep this test's store.
+        backgroundScope.coroutineContext.cancelChildren()
     }
 
     private const val PROBE_TIMEOUT_MS = 300

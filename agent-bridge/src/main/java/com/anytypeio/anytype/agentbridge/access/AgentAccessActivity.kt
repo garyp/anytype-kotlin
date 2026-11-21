@@ -45,6 +45,7 @@ import com.anytypeio.anytype.agentbridge.Access
 import com.anytypeio.anytype.agentbridge.AgentApprovals
 import com.anytypeio.anytype.agentbridge.AgentBridge
 import com.anytypeio.anytype.agentbridge.Approval
+import com.anytypeio.anytype.agentbridge.BridgeController
 import com.anytypeio.anytype.agentbridge.KeyNames
 import com.anytypeio.anytype.agentbridge.consent.ConsentState
 import java.text.DateFormat
@@ -58,8 +59,9 @@ import kotlinx.coroutines.withContext
  * Lists the agent apps the user approved for the running account and revokes them
  * (`APPLICATION_PREFERENCES`). Revoking drops the approval, then deletes the apps' keys from the
  * local API when it can: heart rejects a revoked key at once, which is what cuts off an agent
- * that is connected right now. When it cannot, the pending revoke stays queued and the next
- * connect for that account sweeps the keys.
+ * that is connected right now. When the account is not running, the pending revoke stays
+ * queued and the next connect for that account sweeps the keys. When a key revoke fails, the
+ * screen says so and the bridge retries in the background while the account runs.
  *
  * [AgentApprovals] commits to disk under a process-wide lock and the gateway makes blocking
  * calls, so all of it, and the package lookups, run on [Dispatchers.IO].
@@ -77,7 +79,9 @@ class AgentAccessActivity : ComponentActivity() {
         val loading: Boolean = true,
         val error: String? = null,
         val rows: List<Row> = emptyList(),
-        val busy: Set<String> = emptySet()
+        val busy: Set<String> = emptySet(),
+        /** Shown above the list, e.g. when a revoke has not completed yet. */
+        val notice: String? = null
     )
 
     private var ui by mutableStateOf(UiState())
@@ -128,23 +132,29 @@ class AgentAccessActivity : ComponentActivity() {
                 Row(it, labelOf(it.packageName), iconOf(it.packageName, px))
             }
         }
-        ui = UiState(loading = false, rows = rows, busy = ui.busy)
+        ui = UiState(loading = false, rows = rows, busy = ui.busy, notice = ui.notice)
     }
 
     private fun onRevoke(row: Row) {
         val acc = accountId ?: return
         val pkg = row.approval.packageName
         if (pkg in ui.busy) return
-        ui = UiState(loading = false, rows = ui.rows, busy = ui.busy + pkg)
+        ui = UiState(loading = false, rows = ui.rows, busy = ui.busy + pkg, notice = ui.notice)
         lifecycleScope.launch {
-            try {
+            val complete = try {
                 revoke(acc, pkg)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "revoke of $pkg failed", e)
+                false
             }
-            ui = UiState(loading = false, rows = ui.rows, busy = ui.busy - pkg)
+            ui = UiState(
+                loading = false,
+                rows = ui.rows,
+                busy = ui.busy - pkg,
+                notice = if (complete) ui.notice else REVOKE_RETRYING
+            )
             refresh()
         }
     }
@@ -153,15 +163,15 @@ class AgentAccessActivity : ComponentActivity() {
      * Goes through the [com.anytypeio.anytype.agentbridge.BridgeController], which serializes
      * it with connects: a connect already past its approval check cannot mint a key after the
      * revoke. Without a controller (bridge not installed) only the approval is removed and the
-     * pending revoke stays queued.
+     * pending revoke stays queued. Returns false when a key revoke failed and is being retried.
      */
-    private suspend fun revoke(accountId: String, pkg: String) {
+    private suspend fun revoke(accountId: String, pkg: String): Boolean {
         val controller = AgentBridge.controller(applicationContext)
         if (controller == null) {
             withContext(Dispatchers.IO) { approvals.revoke(accountId, pkg) }
-        } else {
-            controller.revokeAgent(accountId, pkg)
+            return true
         }
+        return controller.revokeAgent(accountId, pkg) != BridgeController.RevokeOutcome.RETRYING
     }
 
     private fun iconOf(pkg: String, px: Int): ImageBitmap? = try {
@@ -184,6 +194,10 @@ class AgentAccessActivity : ComponentActivity() {
                 Spacer(Modifier.height(24.dp))
                 Text("App access", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.height(16.dp))
+                state.notice?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.height(12.dp))
+                }
                 when {
                     state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
@@ -237,6 +251,8 @@ class AgentAccessActivity : ComponentActivity() {
         internal const val EMPTY = "No apps have access to Anytype."
         internal const val SIGN_IN_FIRST = "Sign in to Anytype first"
         internal const val NOT_READY = "Anytype isn't ready. Try again in a moment."
+        internal const val REVOKE_RETRYING =
+            "Couldn't fully revoke access yet. Anytype keeps retrying while it runs."
         private const val TAG = "AgentAccess"
         private const val ICON_DP = 40
 

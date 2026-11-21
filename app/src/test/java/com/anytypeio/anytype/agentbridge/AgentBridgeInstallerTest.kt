@@ -56,6 +56,28 @@ class AgentBridgeInstallerTest {
     )
 
     @Test
+    fun generationFollowsEveryAccountStartAndStop() {
+        val manager = AwaitAccountStartManager.Default
+        val launcher = MiddlewareAccountLauncher(
+            auth = Lazy { authWithMnemonic("m") },
+            configStorage = Lazy { configStorage },
+            awaitAccountStart = manager,
+            launchWallet = Lazy { launchWallet },
+            launchAccount = Lazy { launchAccount },
+            profileName = { null }
+        )
+        val g0 = launcher.generation()
+        manager.setState(AwaitAccountStartManager.State.Started)
+        val g1 = launcher.generation()
+        // A restart reports Started again; the state flow would not emit, the generation moves.
+        manager.setState(AwaitAccountStartManager.State.Started)
+        val g2 = launcher.generation()
+        manager.setState(AwaitAccountStartManager.State.Stopped)
+        val g3 = launcher.generation()
+        assertEquals(listOf(g0 + 1, g0 + 2, g0 + 3), listOf(g1, g2, g3))
+    }
+
+    @Test
     fun ensureStartedWithoutMnemonicThrowsNotLoggedIn() = runBlocking {
         whenever(awaitStart.hasStarted()).thenReturn(false)
         for (mnemonic in listOf(null, "", "   ")) {

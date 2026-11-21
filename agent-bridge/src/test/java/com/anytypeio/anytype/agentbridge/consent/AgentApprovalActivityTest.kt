@@ -66,6 +66,7 @@ class AgentApprovalActivityTest {
             fail?.let { throw it }
             return AccountRef("A", "Alice")
         }
+        override fun generation() = 1L
     }
 
     private object FakeSpaces : SpaceDirectory {

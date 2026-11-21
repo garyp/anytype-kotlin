@@ -92,6 +92,9 @@ class MiddlewareAccountLauncher(
         return AccountRef(id = id, name = cachedName?.takeIf { it.first == id }?.second.orEmpty())
     }
 
+    /** Every start and stop reports to [AwaitAccountStartManager], which counts them. */
+    override fun generation(): Long = awaitAccountStart.generation()
+
     override suspend fun ensureStarted(): AccountRef = mutex.withLock {
         val mnemonic = try {
             auth.get().getMnemonic()

@@ -72,6 +72,7 @@ class AgentAccessActivityTest {
             fail?.let { throw it }
             return AccountRef("A", "Alice").also { running = it }
         }
+        override fun generation() = 1L
     }
 
     private object NoSpaces : SpaceDirectory {
@@ -179,6 +180,7 @@ class AgentAccessActivityTest {
         awaitCond { "com.one" !in approvals.pendingRevokes("A") }
         assertNull(approvals.find("A", "com.one"))
         assertEquals(setOf("h1", "h1b"), gateway.revoked.toSet())
+        assertTrue(compose.onAllNodes(hasText(AgentAccessActivity.REVOKE_RETRYING)).fetchSemanticsNodes().isEmpty())
         assertEquals("com.two", approvals.find("A", "com.two")?.packageName)
         assertTrue(gateway.apps.any { it.appHash == "h2" })
     }
@@ -194,6 +196,7 @@ class AgentAccessActivityTest {
         awaitText("com.one")
         compose.onNodeWithTag(AgentAccessActivity.revokeTag("com.one")).performClick()
         awaitGone("com.one")
+        awaitText(AgentAccessActivity.REVOKE_RETRYING)
         assertNull(approvals.find("A", "com.one"))
         assertEquals(setOf("com.one"), approvals.pendingRevokes("A"))
     }
@@ -211,6 +214,8 @@ class AgentAccessActivityTest {
         awaitGone("com.one")
         assertTrue(gateway.revoked.isEmpty())
         assertEquals(setOf("com.one"), approvals.pendingRevokes("A"))
+        // No key is usable while the account is stopped: nothing to warn about.
+        assertTrue(compose.onAllNodes(hasText(AgentAccessActivity.REVOKE_RETRYING)).fetchSemanticsNodes().isEmpty())
     }
 
     @Test
