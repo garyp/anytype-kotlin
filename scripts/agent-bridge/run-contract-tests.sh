@@ -37,3 +37,5 @@ echo "heart at $ANYTYPE_HEART_BASE_URL (control $ANYTYPE_HEART_CONTROL_URL)"
 cd "$REPO"
 # --rerun: the env vars are not Gradle task inputs, so a cached skipped run must not be reused.
 "$G" :agent-bridge-client:testDebugUnitTest --tests '*realheart*' --rerun "$@"
+# The test agent's FlowRunner against the same heart (the API key is an app key from the harness).
+"$G" :agent-bridge-testapp:testDebugUnitTest --tests '*RealHeart*' --rerun "$@"

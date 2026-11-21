@@ -1,0 +1,74 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    alias(libs.plugins.compose.compiler)
+}
+
+android {
+    namespace 'io.anytype.agentbridge.testapp'
+
+    // Same override as the bridge modules: AGP 9.0.0 resolves android-37.2 only via minorApiLevel.
+    compileSdk { version = release(37) { minorApiLevel = 2 } }
+
+    defaultConfig {
+        applicationId "io.anytype.agentbridge.testapp"
+        minSdk 35
+        // 37 is accepted by AGP 9.0.0 (verified by the build).
+        targetSdk 37
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        // Deliberately not ~/.android/debug.keystore (Anytype's debug build uses that one), so that
+        // certificate pinning is exercised across two distinct certs. Passwords are public: this
+        // key signs a throwaway test app only. Alias "testapp", store/key password "testapp".
+        testapp {
+            storeFile file("testapp-debug.jks")
+            storePassword "testapp"
+            keyAlias "testapp"
+            keyPassword "testapp"
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.testapp
+        }
+    }
+
+    buildFeatures {
+        compose true
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+        unitTests.includeAndroidResources = true
+        unitTests.all { it.jvmArgs '--add-opens=java.base/java.net=ALL-UNNAMED' }
+    }
+}
+
+dependencies {
+    implementation project(':agent-bridge-client')
+
+    implementation libs.coroutines
+    implementation libs.coroutinesAndroid
+    implementation libs.androidxCore
+    implementation libs.compose
+    implementation libs.composeFoundation
+    implementation libs.composeMaterial3
+    implementation libs.activityCompose
+
+    testImplementation libs.junit
+    testImplementation libs.robolectricBridge
+    testImplementation libs.androidXTestCore
+    testImplementation libs.kotlinTest
+    testImplementation libs.coroutines
+
+    androidTestImplementation libs.androidJUnit
+    androidTestImplementation libs.androidXTestRunner
+    androidTestImplementation libs.uiautomator
+    androidTestImplementation libs.composeUiTestJunit4
+    debugImplementation libs.composeUiTestManifest
+}

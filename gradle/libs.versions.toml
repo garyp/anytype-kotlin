@@ -23,6 +23,8 @@ wireVersion = "5.3.5"
 mockitoKotlinVersion = "5.3.1"
 junitVersion = '4.13.2'
 androidJunitVersion = "1.2.1"
+androidxTestRunnerVersion = "1.6.2"
+uiautomatorVersion = "2.3.0"
 rulesVersion = "1.6.1"
 mockitoAndroidVersion = '5.11.0'
 kotlinCoroutinesVersion = '1.8.1'
@@ -112,6 +114,8 @@ telephotoZoomableImage = { module = "me.saket.telephoto:zoomable-image-coil3", v
 mockitoKotlin = { module = "org.mockito.kotlin:mockito-kotlin", version.ref = "mockitoKotlinVersion" }
 junit = { module = "junit:junit", version.ref = "junitVersion" }
 androidJUnit = { module = "androidx.test.ext:junit", version.ref = "androidJunitVersion" }
+androidXTestRunner = { module = "androidx.test:runner", version.ref = "androidxTestRunnerVersion" }
+uiautomator = { module = "androidx.test.uiautomator:uiautomator", version.ref = "uiautomatorVersion" }
 testRules = { module = "androidx.test:rules", version.ref = "rulesVersion" }
 mockitoAndroid = { module = "org.mockito:mockito-android", version.ref = "mockitoAndroidVersion" }
 coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinCoroutinesVersion" }
