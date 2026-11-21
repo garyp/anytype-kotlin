@@ -1,0 +1,32 @@
+plugins {
+    id "com.android.library"
+    id "kotlin-android"
+}
+
+android {
+    namespace 'io.anytype.agentbridge.client'
+
+    // compileSdk 37: the root build.gradle injects 36 for libraries; this module overrides it.
+    // AGP 9.0.0 does not accept plain `compileSdk = 37` here (no android-37 platform dir exists:
+    // the installed platform is android-37.2), but the minor-release syntax below resolves 37.2.
+    // Tasks 7 and 13 must use the same value.
+    compileSdk { version = release(37) { minorApiLevel = 2 } }
+
+    buildFeatures {
+        aidl = true
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
+
+dependencies {
+    implementation libs.coroutines
+    implementation libs.androidxCore
+
+    testImplementation libs.junit
+    testImplementation libs.robolectricBridge
+    testImplementation libs.androidXTestCore
+    testImplementation libs.kotlinTest
+}
