@@ -27,3 +27,32 @@ Control endpoints on `CONTROL_URL`:
 
 Check: with the patched harness `GET $BASE_URL/v2/spaces` with `Authorization: Bearer $API_KEY`
 returns 200; with `run.sh --unpatched` it returns 500.
+
+## Contract tests against real heart
+
+`run-contract-tests.sh` starts the harness from a temp dir (it writes `account_stop.json` into its
+cwd on exit), exports `ANYTYPE_HEART_BASE_URL/API_KEY/CONTROL_URL/SPACE_ID` and runs the
+`*realheart*` tests of `:agent-bridge-client`. Without those env vars the tests are skipped
+(`Assume`), so plain `testDebugUnitTest` stays green.
+
+Behaviour verified with curl against heart v0.51.6 (patched):
+
+- Keyless `/v1/spaces`, `/v2/spaces`, `/mcp/small`: 401 `missing authorization header`.
+- Revoked key: 401 `{"object":"error","status":401,"code":"unauthorized","message":"invalid api key"}`.
+- Foreign `Origin`: 403 `request origin is not allowed`. The JDK `HttpURLConnection` silently drops a
+  caller-set `Origin` (restricted header), so the test uses a raw socket.
+- `changeaddr?addr=` (empty) closes the listener; reopening with `127.0.0.1:<old port>` works, so the
+  test restores the original port instead of `:0` to keep the env-provided base URL valid.
+- /v2 returns short space ids (last 6 chars before the dot of the full id, e.g. `znefhm`); MCP
+  `spaces`/`find` also use short ids but accept the full id as `space`.
+- Narrowed key: `/v1/*` 403 code `v1_not_available_for_scoped_keys`; other space 403 code
+  `space_not_granted` (on `/v2/spaces/<short>` and `/objects`); `/v2/spaces` lists only granted spaces
+  (`has_not_granted_spaces: true`).
+- Read-only key: MCP `create` returns HTTP 200 with `result.isError=true` and text
+  "the HTTP API is a write and the key's grant is read-only..."; REST write is 403 `write_not_granted`.
+- MCP tool results carry `structuredContent` (`create` -> `{id,type,etag}`, `find` -> `{handles:[{n,id,name,type}]}`);
+  `find` handle numbers are per MCP session, so `read` must use the same `McpClient`. `find` is
+  eventually consistent (full-text index), so the test polls.
+- MCP args (from `tools/list`): create{space,type,name,markdown,properties}, find{space,query,type,filter,limit},
+  read{object,space,mode}, describe{space,type,...}, set_properties{object,...}, add_blocks{object,markdown,after,under,space},
+  edit_text{object,find,replace,block,space}.
