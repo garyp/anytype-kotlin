@@ -38,6 +38,8 @@ class AnytypeBridge(
     private var bound = false
     private var connection: ServiceConnection? = null
     private val waiting = mutableListOf<CancellableContinuation<IAgentBridge>>()
+    // Requests sent to the service whose callback has not arrived yet.
+    private val inFlight = mutableListOf<CancellableContinuation<Endpoint>>()
 
     /**
      * Binds to the bridge service if needed, then requests the endpoint. Resumes exactly once per call.
@@ -50,16 +52,34 @@ class AnytypeBridge(
 
     private suspend fun requestEndpoint(bridge: IAgentBridge): Endpoint =
         suspendCancellableCoroutine { cont ->
+            val registered = synchronized(lock) {
+                if (service === bridge) {
+                    inFlight.add(cont)
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!registered) {
+                cont.resumeWithException(
+                    BridgeException.Failed(IAgentBridgeCallback.INTERNAL, "service disconnected")
+                )
+                return@suspendCancellableCoroutine
+            }
+            cont.invokeOnCancellation { synchronized(lock) { inFlight.remove(cont) } }
             val callback = object : IAgentBridgeCallback.Stub() {
                 override fun onReady(baseUrl: String, apiKey: String) {
+                    synchronized(lock) { inFlight.remove(cont) }
                     if (cont.isActive) cont.resume(Endpoint(baseUrl, apiKey))
                 }
 
                 override fun onApprovalRequired() {
+                    synchronized(lock) { inFlight.remove(cont) }
                     if (cont.isActive) cont.resumeWithException(BridgeException.ApprovalRequired())
                 }
 
                 override fun onError(code: Int, message: String?) {
+                    synchronized(lock) { inFlight.remove(cont) }
                     if (cont.isActive) {
                         cont.resumeWithException(BridgeException.Failed(code, message.orEmpty()))
                     }
@@ -69,7 +89,10 @@ class AnytypeBridge(
                 bridge.connect(callback)
             } catch (e: Exception) {
                 // Dead binder or similar: drop the cached service so the next call rebinds.
-                clearService()
+                synchronized(lock) { inFlight.remove(cont) }
+                releaseAndFail(
+                    BridgeException.Failed(IAgentBridgeCallback.INTERNAL, e.message.orEmpty())
+                )
                 if (cont.isActive) {
                     cont.resumeWithException(
                         BridgeException.Failed(IAgentBridgeCallback.INTERNAL, e.message.orEmpty())
@@ -104,6 +127,7 @@ class AnytypeBridge(
                 val stub = IAgentBridge.Stub.asInterface(binder)
                 val toResume: List<CancellableContinuation<IAgentBridge>>
                 synchronized(lock) {
+                    if (connection !== this) return // stale connection
                     service = stub
                     toResume = waiting.toList()
                     waiting.clear()
@@ -112,17 +136,24 @@ class AnytypeBridge(
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
-                synchronized(lock) { service = null }
+                // The service process died. Do not wait for an automatic reconnect that may never
+                // come (app disabled or uninstalled): fail everything pending and rebind next time.
+                if (!isCurrent(this)) return
+                releaseAndFail(
+                    BridgeException.Failed(IAgentBridgeCallback.INTERNAL, "service disconnected")
+                )
             }
 
             override fun onBindingDied(name: ComponentName?) {
-                // The binding is dead: release it so the next connect() binds afresh.
-                clearService()
+                if (!isCurrent(this)) return
+                releaseAndFail(
+                    BridgeException.Failed(IAgentBridgeCallback.INTERNAL, "binding died")
+                )
             }
 
             override fun onNullBinding(name: ComponentName?) {
-                failWaiting(BridgeException.NotInstalled(targetPackage))
-                clearService()
+                if (!isCurrent(this)) return
+                releaseAndFail(BridgeException.NotInstalled(targetPackage))
             }
         }
         synchronized(lock) { connection = conn }
@@ -166,13 +197,26 @@ class AnytypeBridge(
         }
     }
 
+    private fun isCurrent(conn: ServiceConnection): Boolean = synchronized(lock) { connection === conn }
+
+    /** Fails pending binds and in-flight requests. */
     private fun failWaiting(e: BridgeException) {
         val toFail: List<CancellableContinuation<IAgentBridge>>
+        val requests: List<CancellableContinuation<Endpoint>>
         synchronized(lock) {
             toFail = waiting.toList()
             waiting.clear()
+            requests = inFlight.toList()
+            inFlight.clear()
         }
         toFail.forEach { if (it.isActive) it.resumeWithException(e) }
+        requests.forEach { if (it.isActive) it.resumeWithException(e) }
+    }
+
+    /** Drops the connection first (so late callbacks are ignored), then fails all pending calls. */
+    private fun releaseAndFail(e: BridgeException) {
+        clearService()
+        failWaiting(e)
     }
 
     /** Drops the cached service and releases the binding. */
@@ -194,13 +238,12 @@ class AnytypeBridge(
 
     /** Unbinds from the service and fails any pending [connect] calls. */
     fun close() {
-        clearService()
-        failWaiting(BridgeException.NotInstalled(targetPackage))
+        releaseAndFail(BridgeException.NotInstalled(targetPackage))
     }
 
     /** Call when the endpoint was rejected (e.g. key rotated): the next [connect] binds afresh. */
     fun markStale() {
-        clearService()
+        releaseAndFail(BridgeException.Failed(IAgentBridgeCallback.INTERNAL, "endpoint marked stale"))
     }
 
     /** Intent to launch the approval screen of the Anytype app. */

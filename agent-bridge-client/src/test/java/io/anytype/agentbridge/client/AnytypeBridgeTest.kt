@@ -39,6 +39,10 @@ class AnytypeBridgeTest {
      * can keep using BindServiceFlags.
      */
     private class FlagsForwardingContext(base: Context) : ContextWrapper(base) {
+        var lastFlags = 0
+        var lastConnection: ServiceConnection? = null
+        var bindCount = 0
+
         override fun bindService(
             service: Intent,
             flags: Context.BindServiceFlags,
@@ -47,6 +51,9 @@ class AnytypeBridgeTest {
         ): Boolean {
             // BindServiceFlags.getValue() is a hidden API, so read it reflectively.
             val value = Context.BindServiceFlags::class.java.getMethod("getValue").invoke(flags) as Long
+            lastFlags = value.toInt()
+            lastConnection = conn
+            bindCount++
             return baseContext.bindService(service, value.toInt(), executor, conn)
         }
 
@@ -54,18 +61,19 @@ class AnytypeBridgeTest {
         override fun getApplicationContext(): Context = this
     }
 
-    private val ctx: Context = FlagsForwardingContext(app)
+    private val ctx = FlagsForwardingContext(app)
 
     /**
      * Runs [block] off the main thread while this thread keeps idling the (paused) main looper,
      * which is where the shadowed onServiceConnected callback is posted. A plain runBlocking on
      * the test thread would block that looper and never complete.
      */
-    private fun <T> connectWithLooper(block: suspend () -> T): T {
+    private fun <T> connectWithLooper(onTick: () -> Unit = {}, block: suspend () -> T): T {
         val scope = CoroutineScope(Dispatchers.Default)
         val result = scope.async { block() }
         val deadline = System.nanoTime() + 10_000_000_000L
         while (!result.isCompleted) {
+            onTick()
             shadowOf(Looper.getMainLooper()).idle()
             check(System.nanoTime() < deadline) { "connect() did not complete" }
             Thread.sleep(5)
@@ -140,5 +148,63 @@ class AnytypeBridgeTest {
         )
         assertEquals(listOf("io.anytype.app.dev"), AnytypeBridge.findInstalled(app))
         assertTrue(AnytypeBridge.findInstalled(app).isNotEmpty())
+    }
+
+    @Test(timeout = 30_000)
+    fun bindFlagsIncludeAutoCreateAndCapabilities() {
+        install { it.onReady("u", "k") }
+        val bridge = AnytypeBridge(ctx)
+        connectWithLooper { bridge.connect() }
+        assertTrue(ctx.lastFlags and Context.BIND_AUTO_CREATE != 0)
+        assertTrue(ctx.lastFlags and Context.BIND_INCLUDE_CAPABILITIES != 0)
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun bindingDiedWhileWaitingFailsConnect() {
+        // No service registered: bind succeeds but onServiceConnected never arrives.
+        val bridge = AnytypeBridge(ctx)
+        var fired = false
+        val e = assertThrows(BridgeException.Failed::class.java) {
+            connectWithLooper(onTick = {
+                val c = ctx.lastConnection
+                if (c != null && !fired) {
+                    fired = true
+                    c.onBindingDied(ComponentName(pkg, "$pkg.BridgeService"))
+                }
+            }) { bridge.connect() }
+        }
+        assertEquals(IAgentBridgeCallback.INTERNAL, e.code)
+    }
+
+    @Test(timeout = 30_000)
+    fun serviceDeathAfterRequestSentFailsConnect() {
+        var requested = false
+        install { requested = true } // never calls back
+        val bridge = AnytypeBridge(ctx)
+        var fired = false
+        val e = assertThrows(BridgeException.Failed::class.java) {
+            connectWithLooper(onTick = {
+                val c = ctx.lastConnection
+                if (requested && c != null && !fired) {
+                    fired = true
+                    c.onServiceDisconnected(ComponentName(pkg, "$pkg.BridgeService"))
+                }
+            }) { bridge.connect() }
+        }
+        assertEquals(IAgentBridgeCallback.INTERNAL, e.code)
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun connectAfterMarkStaleBindsAgain() {
+        install { it.onReady("u", "k") }
+        val bridge = AnytypeBridge(ctx)
+        connectWithLooper { bridge.connect() }
+        val first = ctx.bindCount
+        bridge.markStale()
+        assertEquals(Endpoint("u", "k"), connectWithLooper { bridge.connect() })
+        assertEquals(first + 1, ctx.bindCount)
+        bridge.close()
     }
 }
