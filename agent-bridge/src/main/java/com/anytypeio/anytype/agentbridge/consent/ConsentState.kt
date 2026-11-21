@@ -45,7 +45,8 @@ data class ConsentState(
             selected.size == 1 -> "1 space"
             else -> "${selected.size} spaces"
         }
-        return "$appLabel will be able to $verbs all objects in $where of $accountName while it is connected."
+        val of = if (accountName.isBlank()) "" else " of $accountName"
+        return "$appLabel will be able to $verbs all objects in $where$of while it is connected."
     }
 
     companion object {

@@ -94,4 +94,16 @@ class ConsentStateTest {
             ConsentState.NARROWED_NOTE
         )
     }
+
+    @Test
+    fun bodyOmitsBlankAccountName() {
+        assertEquals(
+            "Agent will be able to read and change all objects in all your spaces while it is connected.",
+            loaded.copy(accountName = "").body()
+        )
+        assertEquals(
+            "Agent will be able to read and change all objects in all your spaces while it is connected.",
+            loaded.copy(accountName = "  ").body()
+        )
+    }
 }
