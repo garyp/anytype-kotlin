@@ -37,5 +37,6 @@ dependencies {
     testImplementation libs.androidXTestCore
     testImplementation libs.kotlinTest
     testImplementation libs.coroutines
+    testImplementation libs.coroutineTesting
     testImplementation libs.mockitoKotlin
 }
