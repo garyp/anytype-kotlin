@@ -32,11 +32,31 @@ loopback (the API is plain HTTP on `127.0.0.1`):
 
 ## 2. Find Anytype and connect
 
+Any installed app can expose the bridge's bind action, so pin the signing certificate of the
+Anytype build you trust. A pinned bridge binds only to a package signed with that certificate;
+otherwise `connect()` throws `BridgeException.Untrusted` and the impostor never sees a request.
+
 ```kotlin
-val target = AnytypeBridge.findInstalled(context).firstOrNull { it.endsWith(".dev") }
-    ?: AnytypeBridge.findInstalled(context).first()
-val bridge = AnytypeBridge(context, target)   // default target is io.anytype.app
+// SHA-256 of the Anytype build's signing certificate (64 hex digits; colons are fine).
+const val ANYTYPE_CERT = "<sha-256 hex>"
+
+val target = AnytypeBridge.findInstalled(context, ANYTYPE_CERT).firstOrNull()
+    ?: error("No trusted Anytype build installed")
+val bridge = AnytypeBridge(context, target, expectedCertSha256 = ANYTYPE_CERT)
 ```
+
+Get the digest from the APK you install (the debug build is signed with your debug keystore,
+the Play Store build with Anytype's key):
+
+```bash
+apksigner verify --print-certs app-debug.apk | grep 'SHA-256 digest'
+# Signer #1 certificate SHA-256 digest: 0123...cdef
+```
+
+`apksigner` is in the Android SDK build tools. Do not pick the first package `findInstalled(context)`
+returns without a pin: it lists every app that claims the action. Without a pin,
+`AnytypeBridge(context, target)` (default target `io.anytype.app`) binds to whatever is
+installed under that name.
 
 `connect()` is a suspend function. It binds to the Anytype bridge service (starting the Anytype
 process if needed) and returns an `Endpoint(baseUrl, apiKey)` such as `http://127.0.0.1:<port>`
@@ -62,7 +82,8 @@ try {
 `approvalOptions()` enables share-identity (API 34+), which lets Anytype see which app is asking.
 Without it the consent screen refuses. The user sees your app name and signing certificate, picks
 all spaces or specific ones, and read-only or read-write. Other exceptions: `NotInstalled`
-(Anytype is missing or too old) and `Failed(code, msg)`.
+(Anytype is missing or too old), `Untrusted` (the package is not signed with the pinned
+certificate) and `Failed(code, msg)`.
 
 Approvals are per Anytype account and pinned to your package name and signing certificate. The user
 can list and revoke approved agents on the Anytype access screen. Revoking cuts a live agent off
@@ -98,8 +119,8 @@ Access levels:
 ## 4. Keep the binding open, and reconnect on failure
 
 - Keep the `AnytypeBridge` instance (the binding) alive while you work. A bound service keeps
-  Anytype from being frozen in the background and keeps the listener open. Closing the last
-  binding (`close()`) closes the listener.
+  Anytype from being frozen in the background and keeps the listener open. The listener closes
+  when the last binding of any app closes (`close()`).
 - On any connection failure (connection refused, 401, binder death) call `connect()` again: the
   port can change between sessions, and the key can be re-minted. If the endpoint was rejected,
   call `markStale()` first so the next `connect()` rebinds afresh.
@@ -120,13 +141,14 @@ build/agent-bridge/bin/anytype tools --tier small > docs/agent-bridge/small-tool
 
 ## Security notes
 
-While an agent is connected, heart's port on `127.0.0.1` is reachable by any local app. Without a
-valid key such an app gets only 401/403. This exposure is accepted and documented in
-`scripts/agent-bridge/README.md`. The listener is closed when no agent is bound.
+While any app is bound to the bridge service, heart's port on `127.0.0.1` is reachable by any
+local app. Without a valid key such an app gets only 401/403. This exposure is accepted and
+documented in `scripts/agent-bridge/README.md`. The listener is closed when no app is bound; an
+unapproved app that stays bound can keep it open, but gets no key.
 
 ## Known limitations
 
 - The on-device instrumented test (`AgentBridgeFlowTest` in `:agent-bridge-testapp`) has only been
   compiled, not run: the build environment has no emulator or KVM.
 - Test pages created by the test app are not cleaned up.
-- The consent screen shows a blank account name if the profile name cannot be read.
+- The consent screen leaves out the account name if the profile name cannot be read.

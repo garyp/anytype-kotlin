@@ -36,8 +36,26 @@ import io.anytype.agentbridge.client.BridgeException
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    /**
+     * Optional pinned signing certificate of the Anytype build (SHA-256 hex), from the
+     * [EXTRA_PINNED_CERT] extra; null when absent or invalid. With it, only packages signed with
+     * that certificate are listed and bound.
+     */
+    private var pinnedCert: String? = null
+    private var pinError: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        intent?.getStringExtra(EXTRA_PINNED_CERT)?.takeIf { it.isNotBlank() }?.let { pin ->
+            try {
+                // Validates the format up front, so a bad pin is reported, not thrown on bind.
+                AnytypeBridge.findInstalled(this, pin)
+                pinnedCert = pin
+            } catch (e: IllegalArgumentException) {
+                pinError = "ignoring pinned cert: ${e.message}"
+            }
+        }
         setContent {
             MaterialTheme { Surface(Modifier.fillMaxSize()) { AgentScreen() } }
         }
@@ -46,12 +64,17 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun AgentScreen() {
         val scope = rememberCoroutineScope()
-        val targets = remember { AnytypeBridge.findInstalled(this) }
+        val targets = remember { AnytypeBridge.findInstalled(this, pinnedCert) }
         // Prefer the debug build (*.dev) when several Anytype builds are installed.
         var selected by remember {
             mutableStateOf(targets.firstOrNull { it.endsWith(".dev") } ?: targets.firstOrNull())
         }
-        val log = remember { mutableStateListOf<String>() }
+        val log = remember {
+            mutableStateListOf<String>().apply {
+                pinError?.let { add(it) }
+                if (pinnedCert != null) add("pinned cert: only matching Anytype builds are listed")
+            }
+        }
         fun addLog(line: String) { log.add(line) }
 
         var bridge by remember { mutableStateOf<AnytypeBridge?>(null) }
@@ -59,7 +82,7 @@ class MainActivity : ComponentActivity() {
             val current = bridge
             if (current != null && current.targetPackage == pkg) return current
             current?.close()
-            return AnytypeBridge(applicationContext, pkg).also { bridge = it }
+            return AnytypeBridge(applicationContext, pkg, pinnedCert).also { bridge = it }
         }
 
         val approval = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -114,6 +137,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+/**
+ * Intent extra with the SHA-256 of the Anytype build's signing certificate, e.g.
+ * `adb shell am start -n io.anytype.agentbridge.testapp/.MainActivity --es pinned_cert <hex>`.
+ */
+const val EXTRA_PINNED_CERT = "pinned_cert"
 
 /** The log as ONE Text node (lines joined), so a test can assert on the tag `log` directly. */
 @Composable
