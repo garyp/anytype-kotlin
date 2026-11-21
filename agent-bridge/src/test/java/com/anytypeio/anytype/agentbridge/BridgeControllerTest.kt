@@ -6,6 +6,7 @@ import io.anytype.agentbridge.IAgentBridgeCallback
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -75,10 +76,18 @@ class BridgeControllerTest {
 
         override fun runningAccount(): AccountRef? = account
 
+        /** Real starts only: calls that found no running account. */
+        var realStarts = 0
+        var startDelayMs = 0L
+
         override suspend fun ensureStarted(): AccountRef {
             startCalls++
             failure?.let { throw it }
-            return account ?: accountOnStart.also { account = it }
+            account?.let { return it }
+            realStarts++
+            // A second caller racing here would start the account again.
+            if (startDelayMs > 0) delay(startDelayMs)
+            return accountOnStart.also { account = it }
         }
     }
 
@@ -181,6 +190,8 @@ class BridgeControllerTest {
     @Test
     fun concurrentConnectsShareOneListener() = runTest {
         approve(1000, approval())
+        launcher.account = null
+        launcher.startDelayMs = 200
         gateway.bindDelayMs = 300
         // Real threads so the slow bind genuinely overlaps the second connect.
         val c = controller(Dispatchers.IO)
@@ -188,6 +199,7 @@ class BridgeControllerTest {
         val b = async { c.connect(1000) }
         val ra = assertIs<BridgeController.ConnectResult.Ready>(a.await())
         val rb = assertIs<BridgeController.ConnectResult.Ready>(b.await())
+        assertEquals(1, launcher.realStarts)
         assertEquals(1, gateway.listenCalls.size)
         assertEquals(ra.baseUrl, rb.baseUrl)
         assertEquals(1, gateway.created.size)
@@ -259,10 +271,43 @@ class BridgeControllerTest {
         approvals.approve(approval(pkg = "com.gone"))
         approvals.revoke("A", "com.gone")
         val r = assertIs<BridgeController.ConnectResult.Ready>(controller().connect(1000))
-        assertEquals(current.appKey, r.apiKey)
-        assertEquals(setOf(oldCert.appHash, revokedPkg.appHash), gateway.revoked.toSet())
+        // Every key of a pending package goes, the current name included; a fresh key is minted.
+        assertEquals(setOf(oldCert.appHash, current.appHash, revokedPkg.appHash), gateway.revoked.toSet())
+        assertEquals(1, gateway.created.size)
+        val minted = gateway.apps.single { it.appName == keyName }
+        assertEquals(minted.appKey, r.apiKey)
+        assertTrue(r.apiKey != current.appKey)
         assertTrue(gateway.apps.contains(other))
         assertTrue(approvals.pendingRevokes("A").isEmpty())
+    }
+
+    @Test
+    fun reapprovalWithNarrowerGrantMintsNewKey() = runTest {
+        approve(1000, approval())
+        val old = gateway.add(keyName) // minted under the READ_WRITE, all-spaces approval
+        approvals.revoke("A", "com.x")
+        val narrow = approval(access = Access.READ_ONLY, grant = Grant(false, listOf("s1")))
+        approvals.approve(narrow)
+        approved[1000 to "A"] = narrow
+        val r = assertIs<BridgeController.ConnectResult.Ready>(controller().connect(1000))
+        assertEquals(listOf(old.appHash), gateway.revoked)
+        assertEquals<Any>(listOf(Triple(keyName, false, listOf("s1"))), gateway.created)
+        assertEquals(gateway.apps.single { it.appName == keyName }.appKey, r.apiKey)
+        assertTrue(r.apiKey != old.appKey)
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+    }
+
+    @Test
+    fun failedRevokeOfCallersOldKeyIsNotHandedOut() = runTest {
+        approve(1000, approval())
+        val old = gateway.add(keyName)
+        approvals.approve(approval()) // queues a pending revoke for com.x
+        gateway.failRevoke = true
+        val e = assertIs<BridgeController.ConnectResult.Error>(controller().connect(1000))
+        assertEquals(IAgentBridgeCallback.API_FAILED, e.code)
+        assertTrue(gateway.apps.contains(old))
+        assertTrue(gateway.created.isEmpty())
+        assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
     }
 
     @Test

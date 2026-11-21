@@ -67,9 +67,9 @@ class BridgeController(
 
             // 3. Sweep keys pending revocation.
             val apps = try {
-                sweep(account.id, gateway.listApps())
+                sweep(account.id, approval.packageName, gateway.listApps())
             } catch (e: Exception) {
-                return@withContext apiFailed("listApps", e)
+                return@withContext apiFailed("sweep", e)
             }
 
             // 4. Listener.
@@ -91,14 +91,22 @@ class BridgeController(
         }
     }
 
-    /** Revokes stale keys of pending packages; returns the apps that remain. */
-    private fun sweep(accountId: String, listed: List<GatewayApp>): List<GatewayApp> {
+    /**
+     * Revokes every key of each package pending revocation for this account, including a key
+     * named like the current approval: the name depends only on package and cert, so a key
+     * minted under an earlier approval would otherwise outlive a narrower re-approval. Step 5
+     * then mints a fresh key with the stored grant. A pending entry is cleared only when all
+     * its revokes succeed. Returns the apps that remain.
+     *
+     * Throws when a key of [callerPkg] could not be revoked, so that key is never handed out.
+     */
+    private fun sweep(accountId: String, callerPkg: String, listed: List<GatewayApp>): List<GatewayApp> {
         val apps = listed.toMutableList()
+        var callerFailure: Exception? = null
         for (pkg in approvals.pendingRevokes(accountId)) {
-            val keep = approvals.find(accountId, pkg)?.let { KeyNames.name(it.packageName, it.certSha256) }
             val prefix = KeyNames.prefix(pkg)
             var failed = false
-            apps.filter { it.appName.startsWith(prefix) && it.appName != keep }.forEach { app ->
+            apps.filter { it.appName.startsWith(prefix) }.forEach { app ->
                 try {
                     gateway.revokeApp(app.appHash)
                     apps.remove(app)
@@ -106,10 +114,12 @@ class BridgeController(
                     // Keep the pending entry; the next connect retries.
                     Log.w(TAG, "revoke of ${app.appName} failed", e)
                     failed = true
+                    if (pkg == callerPkg) callerFailure = e
                 }
             }
             if (!failed) approvals.clearPendingRevoke(accountId, pkg)
         }
+        callerFailure?.let { throw it }
         return apps
     }
 
