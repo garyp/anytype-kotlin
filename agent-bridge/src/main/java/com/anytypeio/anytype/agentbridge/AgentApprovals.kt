@@ -59,13 +59,22 @@ class AgentApprovals(
 
     private fun read(): State = synchronized(LOCK) { readLocked() }
 
+    /**
+     * Parses each section, and each entry, on its own: a bad entry is skipped, never the rest.
+     * Losing a pending revoke would leave a revoked agent's key valid.
+     */
     private fun readLocked(): State {
         val s = State()
         val raw = prefs.getString(KEY, null) ?: return s
-        try {
-            val o = JSONObject(raw)
-            o.optJSONArray("approvals")?.let { arr ->
-                for (i in 0 until arr.length()) {
+        val o = try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            // Unreadable blob: start empty rather than crash the bridge.
+            return s
+        }
+        o.optJSONArray("approvals")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                skipBad {
                     val j = arr.getJSONObject(i)
                     val g = j.getJSONObject("grant")
                     val ids = g.getJSONArray("spaceIds")
@@ -84,20 +93,27 @@ class AgentApprovals(
                     )
                 }
             }
-            o.optJSONArray("pending")?.let { arr ->
-                for (i in 0 until arr.length()) {
+        }
+        o.optJSONArray("pending")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                skipBad {
                     val j = arr.getJSONObject(i)
                     s.pending.add(PendingRevoke(j.getString("accountId"), j.getString("packageName")))
                 }
             }
-            o.optJSONObject("deniedUntil")?.let { d ->
-                d.keys().forEach { s.deniedUntil[it] = d.getLong(it) }
-            }
-        } catch (e: Exception) {
-            // Corrupt state: start empty rather than crash the bridge.
-            return State()
+        }
+        o.optJSONObject("deniedUntil")?.let { d ->
+            d.keys().forEach { k -> skipBad { s.deniedUntil[k] = d.getLong(k) } }
         }
         return s
+    }
+
+    private inline fun skipBad(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: Exception) {
+            // A corrupt entry: skip it, keep the others.
+        }
     }
 
     private fun write(s: State) {

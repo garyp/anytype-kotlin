@@ -124,4 +124,48 @@ class AgentApprovalsTest {
         val expected = (0 until n).filter { it % 2 == 1 }.map { "com.p$it" }.toSet()
         assertEquals(expected, fresh.pendingRevokes("A"))
     }
+
+    private fun writeRaw(raw: String) =
+        context.getSharedPreferences("agent_bridge", Context.MODE_PRIVATE).edit().putString("state", raw).commit()
+
+    @Test
+    fun corruptEntriesAreSkippedAndPendingRevokesSurvive() {
+        writeRaw(
+            """
+            {"approvals":[
+              {"accountId":"A","packageName":"com.bad","certSha256":"c","access":"NOPE",
+               "grant":{"allSpaces":true,"spaceIds":[]},"approvedAt":1},
+              "junk",
+              {"accountId":"A","packageName":"com.x","certSha256":"abcdef0123456789","access":"READ_ONLY",
+               "grant":{"allSpaces":false,"spaceIds":["s1"]},"approvedAt":5}
+             ],
+             "pending":[{"accountId":"A"},{"accountId":"A","packageName":"com.gone"},7],
+             "deniedUntil":{"com.d":5000,"com.bad":"soon"}}
+            """.trimIndent()
+        )
+        val s = store()
+        assertEquals(listOf(approval()), s.all())
+        assertEquals(setOf("com.gone"), s.pendingRevokes("A"))
+        assertTrue(s.isInDenialCooldown("com.d"))
+        assertFalse(s.isInDenialCooldown("com.bad"))
+    }
+
+    @Test
+    fun badSectionDoesNotDropOtherSections() {
+        writeRaw("""{"approvals":"oops","pending":[{"accountId":"A","packageName":"com.gone"}],"deniedUntil":3}""")
+        val s = store()
+        assertTrue(s.all().isEmpty())
+        assertEquals(setOf("com.gone"), s.pendingRevokes("A"))
+        // A write keeps the surviving pending revoke.
+        s.deny("com.z")
+        assertEquals(setOf("com.gone"), store().pendingRevokes("A"))
+    }
+
+    @Test
+    fun unparsableBlobStartsEmpty() {
+        writeRaw("{not json")
+        val s = store()
+        assertTrue(s.all().isEmpty())
+        assertTrue(s.pendingRevokes("A").isEmpty())
+    }
 }
