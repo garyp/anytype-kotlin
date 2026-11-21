@@ -1,5 +1,11 @@
 # Agent bridge tooling
 
+> **Before the first build:** the app depends on the patched heart artifact
+> `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1`, which exists only in Maven Local. A
+> fresh clone cannot build `:app` until `scripts/agent-bridge/build-heart-android.sh` (all ABIs,
+> 30-60+ minutes) has published it; see "Building the patched heart for Android" below. Export
+> `UNSPLASH_KEY` and `INHOUSE_KEY` for that build, or the Unsplash cover picker will not work.
+
 ## Native heart harness
 
 Contract tests for the agent bridge run against the real anytype-heart (Go middleware) built as a
@@ -61,9 +67,18 @@ Behaviour verified with curl against heart v0.51.6 (patched):
 
 `build-heart-android.sh [--abis arm64-v8a,x86_64]` fetches heart, applies `heart-mobile-api.patch`,
 builds tantivy for each Android target, runs `gomobile bind` and publishes the AAR to Maven Local
-as `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1`. All four ABIs take 30-60+ minutes;
-`--abis` narrows it. `mavenLocal()` is the first repository, and `middlewareVersion` in
-`gradle/libs.versions.toml` points at that version. Needs Go, Rust, the Android NDK and Maven.
+as `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1`. All four ABIs take 30-60+ minutes.
+`mavenLocal()` is the first repository, and `middlewareVersion` in `gradle/libs.versions.toml`
+points at that version. Needs Go, Rust, the Android NDK and Maven.
+
+- `--abis` narrows the build for a quicker local try. A narrowed AAR is published under its own
+  version, `v0.51.6-agentbridge.1-<goarch>...` (for example `v0.51.6-agentbridge.1-arm64-amd64`),
+  so it never overwrites the full artifact; set `middlewareVersion` to it by hand to use it.
+- Keys: upstream CI stamps two keys into heart. The script does the same when the environment
+  variables are set, and warns when they are not. Never commit their values.
+  - `UNSPLASH_KEY` sets `util/unsplash.DefaultToken`. Without it the Unsplash cover picker does
+    not work.
+  - `INHOUSE_KEY` sets `metrics.DefaultInHouseKey`. Without it in-house analytics stay silent.
 
 ## Building and testing the app
 
@@ -83,6 +98,11 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk        # io.anytype.app
 adb install -r agent-bridge-testapp/build/outputs/apk/debug/*.apk
 $G :agent-bridge-testapp:connectedDebugAndroidTest
 ```
+
+The test app can pin the Anytype build's signing certificate (optional):
+`adb shell am start -n io.anytype.agentbridge.testapp/.MainActivity --es pinned_cert <sha-256 hex>`
+(get the digest with `apksigner verify --print-certs app-debug.apk`). It then lists and binds only
+builds signed with that certificate.
 
 Log in to a (local-only) account in Anytype first. The instrumented test drives the approval screen
 and a read/write flow through the bridge. It has been compiled but not run yet (no emulator in the
@@ -106,8 +126,9 @@ given heart version still has the bug (500 means yes). The upstream issue draft 
 
 ## Accepted loopback exposure
 
-While an agent is bound, heart listens on `127.0.0.1:<port>`. Any local app can reach that port.
-Without a key it gets 401/403 and the `Anytype-Version` header. Heart's keyless pairing challenge
-cannot complete because the Android app never shows the approval it needs. The listener closes
-when the last agent binding closes. Contract tests assert that keyless REST and MCP calls are
+While any app is bound to the bridge service, heart listens on `127.0.0.1:<port>`. Any local app
+can reach that port. Without a key it gets 401/403 and the `Anytype-Version` header. Heart's keyless
+pairing challenge cannot complete because the Android app never shows the approval it needs. The
+listener closes when the last binding closes, whichever app holds it: an unapproved app that stays
+bound can keep the listener open, but it learns no key and reaches only that same 401/403 surface. Contract tests assert that keyless REST and MCP calls are
 rejected.

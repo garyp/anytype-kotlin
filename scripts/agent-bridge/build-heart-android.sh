@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # Builds the patched anytype-heart as an Android library (gomobile AAR), publishes it to Maven Local
-# as io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1, and syncs heart's protos into
+# as io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1 (all ABIs), and syncs heart's protos into
 # protocol/src/main/proto/.
 #
 #   build-heart-android.sh [--abis arm64-v8a,x86_64]
 #
 # --abis takes Android ABI names (armeabi-v7a, arm64-v8a, x86, x86_64) or Go arch names
-# (arm, arm64, 386, amd64). The default is all four ABIs heart ships.
+# (arm, arm64, 386, amd64). The default is all four ABIs heart ships. A narrowed build is
+# published under its own version, v0.51.6-agentbridge.1-<goarch>-<goarch>... (for example
+# v0.51.6-agentbridge.1-arm64-amd64), so it never overwrites the full artifact the app depends on;
+# point middlewareVersion at it by hand to try it.
+#
+# Optional environment (never commit the values): UNSPLASH_KEY and INHOUSE_KEY are stamped into
+# heart the way upstream CI does (util/unsplash.DefaultToken, metrics.DefaultInHouseKey). Without
+# UNSPLASH_KEY the Unsplash cover picker does not work; without INHOUSE_KEY in-house analytics stay
+# silent.
 # Mirrors heart's makefiles/android.mk (gomobile bind) and tantivy-go's rust/Makefile (cargo per
 # Android target). The govvv version stamping of android.mk is replaced by static -X ldflags.
 # Takes 30-60+ minutes for all four ABIs.
@@ -30,10 +38,11 @@ MVN="${MVN:-$(command -v mvn || echo /opt/maven/bin/mvn)}"
 export PATH="$HOME/.cargo/bin:$OUT/tools:$PATH" GOTOOLCHAIN=auto CGO_ENABLED=1
 
 ABIS="armeabi-v7a,arm64-v8a,x86,x86_64"
+NARROWED=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --abis) ABIS="$2"; shift 2 ;;
-    --abis=*) ABIS="${1#--abis=}"; shift ;;
+    --abis) ABIS="$2"; NARROWED=1; shift 2 ;;
+    --abis=*) ABIS="${1#--abis=}"; NARROWED=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -48,6 +57,17 @@ abi_info() {
     *) echo "unknown ABI: $1" >&2; return 1 ;;
   esac
 }
+
+# A narrowed build gets its own version, so it never replaces the full artifact in Maven Local.
+if [ -n "$NARROWED" ]; then
+  suffix=""
+  for abi in ${ABIS//,/ }; do
+    info="$(abi_info "$abi")" || exit 2
+    read -r goarch _ _ <<<"$info"
+    suffix="$suffix-$goarch"
+  done
+  VERSION="$VERSION$suffix"
+fi
 
 NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
 [ -d "$NDK_BIN" ] || { echo "NDK not found: $ANDROID_NDK_HOME" >&2; exit 1; }
@@ -90,6 +110,17 @@ gomobile init
 export CGO_CFLAGS="-Wno-deprecated-non-prototype -Wno-unknown-warning-option -Wno-deprecated-declarations -Wno-xor-used-as-pow -Wno-single-bit-bitfield-constant-conversion"
 VCS=github.com/anyproto/anytype-heart/util/vcs
 LDFLAGS="-X $VCS.GitSummary=$VERSION -X $VCS.GitBranch=agentbridge -X $VCS.GitCommit=$HEART_VERSION -X $VCS.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Upstream CI (heart's .github/workflows/build.yml) also stamps these two keys. Never echo LDFLAGS.
+if [ -n "${UNSPLASH_KEY:-}" ]; then
+  LDFLAGS="$LDFLAGS -X github.com/anyproto/anytype-heart/util/unsplash.DefaultToken=$UNSPLASH_KEY"
+else
+  echo "warning: UNSPLASH_KEY is not set; the Unsplash cover picker will not work" >&2
+fi
+if [ -n "${INHOUSE_KEY:-}" ]; then
+  LDFLAGS="$LDFLAGS -X github.com/anyproto/anytype-heart/metrics.DefaultInHouseKey=$INHOUSE_KEY"
+else
+  echo "warning: INHOUSE_KEY is not set; in-house analytics stay silent" >&2
+fi
 TARGET="$(IFS=,; echo "${GOTARGETS[*]}")"
 AAR="$OUT/android/lib.aar"
 mkdir -p "$OUT/android"
@@ -101,6 +132,9 @@ echo "gomobile bind -target=$TARGET" >&2
 "$MVN" -q install:install-file -Dfile="$AAR" -DgroupId="$GROUP_ID" -DartifactId="$ARTIFACT_ID" \
   -Dversion="$VERSION" -Dpackaging=aar -DgeneratePom=true
 echo "published: $HOME/.m2/repository/${GROUP_ID//.//}/$ARTIFACT_ID/$VERSION/$ARTIFACT_ID-$VERSION.aar" >&2
+if [ -n "$NARROWED" ]; then
+  echo "narrowed ABIs: set middlewareVersion = \"$VERSION\" in gradle/libs.versions.toml to use it" >&2
+fi
 
 # 6. Proto sync: only the files the repo already has (heart's snapshot.proto is not used by the app)
 PROTO="$ROOT/protocol/src/main/proto"
