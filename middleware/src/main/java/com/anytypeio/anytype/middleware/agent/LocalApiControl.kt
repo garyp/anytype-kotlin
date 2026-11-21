@@ -87,14 +87,19 @@ class LocalApiControl(private val calls: HeartCalls = GomobileHeartCalls) {
         )
         response.error?.takeIf { it.code != Rpc.Account.LocalLink.CreateApp.Response.Error.Code.NULL }
             ?.let { throw LocalApiException("CreateApp failed: ${it.code} ${it.description}") }
-        // The response carries only the key; the hash is not returned by heart here.
-        val hash = listApps().firstOrNull { it.appKey == response.appKey }?.appHash.orEmpty()
-        return LocalApiApp(
-            appHash = hash,
-            appName = name,
-            appKey = response.appKey,
-            createdAt = System.currentTimeMillis() / 1000
-        )
+        // CreateApp returns only the key; resolve heart's own entry (hash, name,
+        // createdAt) from the listing so every field comes from the same source.
+        val listed = try {
+            listApps()
+        } catch (e: Exception) {
+            throw LocalApiException(
+                "App key was created but could not be resolved: listing apps failed (${e.message})"
+            )
+        }
+        return listed.firstOrNull { it.appKey == response.appKey }
+            ?: throw LocalApiException(
+                "App key was created but could not be resolved: not found in the app list"
+            )
     }
 
     /** Revokes an app key. An unknown hash counts as already revoked. */
