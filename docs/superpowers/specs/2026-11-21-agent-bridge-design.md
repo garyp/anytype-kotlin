@@ -1,6 +1,6 @@
 # Agent bridge: on-device agent access to Anytype data
 
-Status: draft for approval · 2026-11-21
+Status: draft for approval · 2026-11-21 (rev 2: heart patch, per-account approvals, debug target)
 
 ## Intent
 
@@ -12,6 +12,16 @@ Heart, the Go middleware inside the Anytype app, already contains a full local H
 `/v1` and `/v2`, plus MCP at `/mcp/{small,large,full}`. The Android app never starts it. The
 bridge starts the API on loopback, and hands an approved agent app the address and a scoped
 bearer key over Binder.
+
+**Heart blocker (found while validating, rev 2).** In heart's mobile library
+(`clientlibrary/service`) nothing calls `api.SetMiddlewareParams(mw)`; only
+`cmd/grpcserver` does. On Android the JSON API therefore binds and reports success, but every
+authenticated request nil-derefs `mw` in `core/api/server/middleware.go` and gin answers an
+empty HTTP 500. Verified in source for v0.51.6, v0.51.11 (latest release) and the
+2026-11-21 nightly, and reproduced with a natively built heart. A one-line fix in
+`clientlibrary/service/lib.go` `init()` (call `api.SetMiddlewareParams(mw)`) makes REST, MCP and
+key management work. No Kotlin-side workaround exists, so the fork ships a patched heart
+(see "Patched heart library").
 
 Starting point: the research report and sample patch the user supplied
 (`anytype-agent-bridge-report.md` and `anytype-kotlin-agent-bridge.patch`, written against
@@ -111,6 +121,28 @@ Checked against developer.android.com on 2026-11-21.
 The user picked option 1.
 
 ## Design
+
+### Patched heart library
+
+- **Script:** `scripts/agent-bridge/build-heart-android.sh`, committed. It:
+  - fetches heart `v0.51.6` source from the Go module proxy;
+  - applies `scripts/agent-bridge/heart-mobile-api.patch`, the one-line fix;
+  - builds tantivy's Android static libraries from the Rust source of tantivy-go v1.0.6;
+  - runs `gomobile bind` with the same tags as heart's `makefiles/android.mk`
+    (`nogrpcserver gomobile nowatchdog nosigar timetzdata rasterizesvg`, `-androidapi 26`);
+  - publishes the AAR to Maven Local as
+    `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1`.
+- **ABIs:** by default it builds every ABI heart ships, so the app's ABI splits stay intact.
+  `--abis` narrows the list for a quicker local build.
+- **Version pin:** `gradle/libs.versions.toml` points `middlewareVersion` at that version.
+  `mavenLocal()` is already the first repository, so nothing else changes. The repo's existing
+  `libs/` module isn't used, because its version is hard-coded to `0.99`.
+- **Protos:** the `.proto` files are synced from the same heart source by the same script, and
+  match what the patch already did.
+- **README:** `scripts/agent-bridge/README.md` documents the rebuild for a heart upgrade, and
+  how to drop the patch once upstream fixes it.
+- **Upstream:** the builder also writes an upstream issue draft to
+  `docs/agent-bridge/heart-issue-draft.md`.
 
 ### Modules
 
@@ -242,8 +274,13 @@ proto sync.
 ### Approvals store
 
 - **Format:** a single JSON blob in a module-private `SharedPreferences` file. Each entry is
-  `{package, certSha256, access, approvedAt}`, plus a `deniedUntil` map and a `pendingRevoke`
-  set.
+  `{accountId, package, certSha256, access, approvedAt}`, plus a `deniedUntil` map and a
+  `pendingRevoke` set of `{accountId, package}`.
+- **Per account:** an approval covers the Anytype account that was active when the user
+  approved. After logging in to another account, the agent gets `onApprovalRequired`.
+  - The consent screen names the account.
+  - `AccountLauncher` exposes the running account's ID.
+  - Pending revocations are swept only while their own account is running.
 - **Why no encryption:**
   - The store holds no secrets: keys live only in heart, which is already the source of truth
     for them.
@@ -251,6 +288,13 @@ proto sync.
   - Tampering needs root.
 - **Backup:** the file is excluded from backup and device transfer, so approvals never leave the
   device.
+
+### Release-readiness (cheap only)
+
+- `consumer-rules.pro` in `agent-bridge` and `agent-bridge-client` keeps the AIDL stubs.
+- `middleware` keeps the classes `LocalApiControl` calls. They are already covered by the
+  existing Wire/gomobile rules; the builder checks this.
+- No `assembleRelease` run is required.
 
 ### Errors and edge cases
 
@@ -280,7 +324,8 @@ The tests run in four layers.
      approval and `RESULT_OK`.
 2. **Middleware contract tests:** JVM tests for `LocalApiControl`'s request building and response
    parsing, using encoded Wire messages through a seam around `Service`.
-3. **Real heart, natively on Linux:**
+3. **Real heart, natively on Linux** (the harness exists as a spike, and gets committed under
+   `scripts/agent-bridge/heart-harness/`):
    - Heart v0.51.6 is built from source, with tantivy built from its Rust source, and run with a
      fresh local-only account.
    - A Go harness calls the same service-level RPCs gomobile exposes (`ChangeJsonApiAddr`,
@@ -291,8 +336,17 @@ The tests run in four layers.
    - This validates the heart behaviour the bridge depends on, using the same heart version.
    - It is gated: the tests skip unless `ANYTYPE_HEART_BASE_URL` is set, and a script starts
      the harness and runs them.
-   - If the native build proves impossible, this layer falls back to a recorded-fixture
-     MockWebServer, and the gap is reported.
+   - Known heart behaviour to encode in the client and the tests:
+     - `Mcp-Session-Id` is a response header from initialize, and is required afterwards;
+       without it the server answers 400, and with an unknown id 404 (re-initialize).
+     - Protocol versions 2025-06-18 and 2025-11-25 are accepted.
+     - Requests must carry no `Origin`, or a loopback one; anything else gives 403.
+     - A failed bind leaves nothing listening.
+     - `ListApps` returns full keys.
+     - A duplicate app name is allowed.
+     - Errors have the shape `{object, status, code, message}`.
+   - The harness also checks the unpatched build: an authenticated request returns 500, which
+     documents why the patch exists.
 4. **Device level** (built here, not run here):
    - The test app APK and its instrumented test compile.
    - The UiAutomator test: launch the test app, Bind/Connect, tap Allow in Anytype's dialog,
@@ -300,8 +354,8 @@ The tests run in four layers.
    - The user runs it with Anytype (debug) and the test app installed on an emulator or phone.
 
 **Build checks:**
-- `:app:assembleDebug`, `:agent-bridge-testapp:assembleDebug` and `assembleDebugAndroidTest`
-  succeed.
+- The patched heart AAR builds here, and `:app:assembleDebug` links against it.
+- `:agent-bridge-testapp:assembleDebug` and `assembleDebugAndroidTest` succeed.
 - The unit tests of the touched and new modules pass.
 - `lintDebug` raises no new errors in the new modules.
 
@@ -314,7 +368,19 @@ The tests run in four layers.
 - Where the gated real-heart tests and their run script live: `scripts/agent-bridge/`
   is suggested.
 
+## Decisions made with the user
+
+- Approach 1: the self-contained module.
+- Tests run only in what this container can execute: JVM, Robolectric, and real heart natively.
+  Device tests are compiled but not run.
+- Ship a patched heart AAR built from source.
+- Target the debug build first.
+
 ## Decisions made without the user (please check)
+
+- Approvals are per Anytype account.
+- The open loopback port is accepted and documented, with tests that key-less calls are
+  rejected.
 
 - **Old Android:** the bridge is enabled only on Android 15+. Below that, the components are
   disabled.
