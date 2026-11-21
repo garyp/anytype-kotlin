@@ -38,8 +38,14 @@ object AgentBridge {
     private var controller: BridgeController? = null
     private val lock = Any()
 
-    /** Incremented on every bind; an unbind closes the listener only if no bind came after it. */
-    internal val bindGeneration = AtomicInteger()
+    /**
+     * Distinct bind intents currently bound. The system calls onBind/onUnbind once per intent
+     * (by [android.content.Intent.filterEquals]), not per client, so this is zero exactly when no
+     * binding of any kind remains.
+     */
+    internal val activeBindings = AtomicInteger()
+
+    internal fun idle() = activeBindings.get() <= 0
 
     /** Runs the listener close after the last unbind; never cancelled. */
     @VisibleForTesting
@@ -48,10 +54,14 @@ object AgentBridge {
 
     internal val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** Test seam: replaces the [CallerVerifier]-backed check. */
+    /** Test seams: replace the [CallerVerifier]-backed checks. */
     @VisibleForTesting
     @Volatile
     internal var callerCheckOverride: CallerCheck? = null
+
+    @VisibleForTesting
+    @Volatile
+    internal var approvedAnywhereOverride: ApprovedAnywhere? = null
 
     fun install(gateway: LocalApiGateway, launcher: AccountLauncher, spaces: SpaceDirectory) {
         synchronized(lock) {
@@ -70,17 +80,18 @@ object AgentBridge {
         if (Build.VERSION.SDK_INT < 35) return null
         val app = context.applicationContext
         val approvals = AgentApprovals(app)
-        val check = callerCheckOverride ?: run {
-            val verifier = CallerVerifier(app.packageManager, approvals)
-            CallerCheck { uid, acc -> verifier.approvedCaller(uid, acc) }
-        }
+        val verifier = CallerVerifier(app.packageManager, approvals)
         BridgeController(
             gateway = gateway,
             launcher = launcher,
             approvals = approvals,
-            callerCheck = check,
+            callerCheck = callerCheckOverride
+                ?: CallerCheck { uid, acc -> verifier.approvedCaller(uid, acc) },
+            approvedAnywhere = approvedAnywhereOverride
+                ?: ApprovedAnywhere { uid -> verifier.approvedAnywhere(uid) },
             probe = ::probe,
-            dispatcher = Dispatchers.IO
+            dispatcher = Dispatchers.IO,
+            idle = ::idle
         ).also { controller = it }
     }
 
@@ -104,8 +115,9 @@ object AgentBridge {
         spaces = null
         controller = null
         callerCheckOverride = null
+        approvedAnywhereOverride = null
         unbindDispatcher = Dispatchers.IO
-        bindGeneration.set(0)
+        activeBindings.set(0)
     }
 
     private const val PROBE_TIMEOUT_MS = 300

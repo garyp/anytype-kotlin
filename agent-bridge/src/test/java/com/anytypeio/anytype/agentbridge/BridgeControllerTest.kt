@@ -96,6 +96,9 @@ class BridgeControllerTest {
     private lateinit var approvals: AgentApprovals
     private val approved = mutableMapOf<Pair<Int, String>, Approval>()
     private var probeResult = true
+
+    /** False once the last client has unbound. */
+    private var bound = true
     private val probed = mutableListOf<String>()
 
     @Before
@@ -106,6 +109,7 @@ class BridgeControllerTest {
         approvals = AgentApprovals(context)
         approved.clear()
         probeResult = true
+        bound = true
         probed.clear()
     }
 
@@ -130,6 +134,8 @@ class BridgeControllerTest {
             launcher = launcher,
             approvals = approvals,
             callerCheck = CallerCheck { uid, accountId -> approved[uid to accountId] },
+            approvedAnywhere = ApprovedAnywhere { uid -> approved.keys.any { it.first == uid } },
+            idle = { !bound },
             probe = { addr -> probed.add(addr); probeResult },
             dispatcher = dispatcher
         )
@@ -156,6 +162,8 @@ class BridgeControllerTest {
 
     @Test
     fun notLoggedInMapsToCode1() = runTest {
+        // Only a caller approved under some account gets this far.
+        approve(1000, approval())
         launcher.failure = AccountStartException(AccountStartException.NOT_LOGGED_IN, "no account")
         val r = controller().connect(1000)
         val e = assertIs<BridgeController.ConnectResult.Error>(r)
@@ -336,15 +344,46 @@ class BridgeControllerTest {
         approve(1000, approval())
         val c = controller()
         assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
+        bound = false
         c.onAllUnbound()
         assertEquals(listOf(BridgeController.LISTEN, ""), gateway.listenCalls)
         // Nothing cached any more: a second unbind is a no-op, the next connect binds afresh.
         c.onAllUnbound()
         assertEquals(2, gateway.listenCalls.size)
+        bound = true
         probed.clear()
         assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
         assertTrue(probed.isEmpty())
         assertEquals(3, gateway.listenCalls.size)
+    }
+
+    @Test
+    fun unbindWhileAnotherBindingRemainsKeepsListener() = runTest {
+        approve(1000, approval())
+        val c = controller()
+        assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
+        // bound stays true: the idle check runs under the mutex and sees a live binding.
+        c.onAllUnbound()
+        assertEquals(listOf(BridgeController.LISTEN), gateway.listenCalls)
+    }
+
+    @Test
+    fun connectFinishingAfterLastUnbindClosesListener() = runTest {
+        approve(1000, approval())
+        // The last client unbound while this connect was queued or running.
+        bound = false
+        assertIs<BridgeController.ConnectResult.Ready>(controller().connect(1000))
+        assertEquals(listOf(BridgeController.LISTEN, ""), gateway.listenCalls)
+    }
+
+    @Test
+    fun unapprovedCallerDoesNotStartAccount() = runTest {
+        launcher.account = null
+        launcher.failure = AccountStartException(AccountStartException.NOT_LOGGED_IN, "no account")
+        val r = controller().connect(1000)
+        assertEquals(BridgeController.ConnectResult.ApprovalRequired, r)
+        assertEquals(0, launcher.startCalls)
+        assertTrue(gateway.listenCalls.isEmpty())
     }
 
     @Test
@@ -357,6 +396,7 @@ class BridgeControllerTest {
             launcher = launcher,
             approvals = approvals,
             callerCheck = { uid, acc -> approved[uid to acc] },
+            approvedAnywhere = { true },
             probe = { true },
             dispatcher = StandardTestDispatcher(testScheduler)
         )

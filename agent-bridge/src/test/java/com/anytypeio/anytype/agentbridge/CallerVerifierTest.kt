@@ -57,6 +57,17 @@ class CallerVerifierTest {
         assertNull(v.approvedCaller(99, "A"))
     }
 
+    @Test
+    fun approvedAnywhereMatchesAnyAccountWithVerifiedCert() {
+        approvals.approve(Approval("B", "com.x", "aabb", Access.READ_ONLY, Grant.ALL, 1L))
+        val ok = CallerVerifier(pmWith(10, "com.x"), approvals) { _, b -> b.contentEquals(byteArrayOf(0xaa.toByte(), 0xbb.toByte())) }
+        kotlin.test.assertTrue(ok.approvedAnywhere(10))
+        val wrongCert = CallerVerifier(pmWith(10, "com.x"), approvals) { _, _ -> false }
+        kotlin.test.assertFalse(wrongCert.approvedAnywhere(10))
+        val otherPkg = CallerVerifier(pmWith(10, "com.y"), approvals) { _, _ -> true }
+        kotlin.test.assertFalse(otherPkg.approvedAnywhere(10))
+    }
+
     private fun pmWith(uid: Int, vararg pkgs: String): PackageManager {
         val pm = mock<PackageManager>()
         org.mockito.kotlin.whenever(pm.getPackagesForUid(uid)).thenReturn(arrayOf(*pkgs))

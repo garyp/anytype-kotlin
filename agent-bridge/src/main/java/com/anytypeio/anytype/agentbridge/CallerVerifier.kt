@@ -29,6 +29,17 @@ class CallerVerifier(
         return null
     }
 
+    /**
+     * True when the UID holds an approval under any account whose pinned cert still verifies.
+     * Lets a connect turn away an unknown caller before it starts the account.
+     */
+    fun approvedAnywhere(uid: Int): Boolean {
+        val packages = pm.getPackagesForUid(uid)?.toSet() ?: return false
+        return approvals.all().any { a ->
+            a.packageName in packages && fromHex(a.certSha256)?.let { certCheck(uid, it) } == true
+        }
+    }
+
     /** Lowercase hex SHA-256 of the app's signing certificate; null for unknown package or multiple signers. */
     fun currentCertSha256(pkg: String): String? {
         val info = try {

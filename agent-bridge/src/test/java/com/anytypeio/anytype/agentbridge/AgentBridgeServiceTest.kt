@@ -79,6 +79,9 @@ class AgentBridgeServiceTest {
     private lateinit var gateway: FakeGateway
     private val approved = mutableMapOf<Int, Approval>()
     private val intent = Intent(AgentBridge.ACTION_BIND)
+
+    /** Not [Intent.filterEquals] to [intent]: the system calls onBind/onUnbind for it separately. */
+    private val otherIntent = Intent(AgentBridge.ACTION_BIND).addCategory("com.example.OTHER")
     private lateinit var service: ServiceController<AgentBridgeService>
 
     @Before
@@ -87,6 +90,7 @@ class AgentBridgeServiceTest {
         gateway = FakeGateway()
         approved.clear()
         AgentBridge.callerCheckOverride = CallerCheck { uid, _ -> approved[uid] }
+        AgentBridge.approvedAnywhereOverride = ApprovedAnywhere { uid -> approved.containsKey(uid) }
         service = Robolectric.buildService(AgentBridgeService::class.java, intent).create()
     }
 
@@ -97,18 +101,24 @@ class AgentBridgeServiceTest {
 
     private fun install() = AgentBridge.install(gateway, FakeLauncher(), FakeSpaces())
 
-    private fun bridge(): IAgentBridge = IAgentBridge.Stub.asInterface(service.get().onBind(intent))
+    /** What the system does for the first client binding with [i]. */
+    private fun bind(i: Intent = intent): IAgentBridge = IAgentBridge.Stub.asInterface(service.get().onBind(i))
 
-    private fun connect(uid: Int): String {
+    /** What the system does once the last client binding with [i] has gone. */
+    private fun unbind(i: Intent = intent) = assertFalse(service.get().onUnbind(i))
+
+    private fun connect(bridge: IAgentBridge, uid: Int): String {
         val rec = Recorder()
         ShadowBinder.setCallingUid(uid)
-        bridge().connect(rec)
+        bridge.connect(rec)
         return rec.await()
     }
 
     private fun approve(uid: Int) {
         approved[uid] = Approval("A", "com.x", "abcdef", Access.READ_WRITE, Grant.ALL, 1L)
     }
+
+    private fun listenCalls() = synchronized(gateway) { gateway.listenCalls.toList() }
 
     private fun waitUntil(condition: () -> Boolean) {
         val deadline = System.currentTimeMillis() + 5_000
@@ -122,27 +132,28 @@ class AgentBridgeServiceTest {
     fun connectDeliversOnReady() {
         install()
         approve(10_123)
-        assertEquals("ready http://127.0.0.1:40000 key1", connect(10_123))
+        assertEquals("ready http://127.0.0.1:40000 key1", connect(bind(), 10_123))
     }
 
     @Test
     fun connectDeliversApprovalRequired() {
         install()
-        assertEquals("approval", connect(10_124))
+        assertEquals("approval", connect(bind(), 10_124))
     }
 
     @Test
     fun callingUidIsReadOnTheBinderThread() {
         install()
         approve(10_123)
+        val b = bind()
         // Only 10_123 is approved; the uid must be the binder caller's, not the IO thread's.
-        assertEquals("approval", connect(10_999))
-        assertTrue(connect(10_123).startsWith("ready "))
+        assertEquals("approval", connect(b, 10_999))
+        assertTrue(connect(b, 10_123).startsWith("ready "))
     }
 
     @Test
     fun notInstalledDeliversInternalError() {
-        assertEquals("error ${IAgentBridgeCallback.INTERNAL} bridge not installed", connect(10_123))
+        assertEquals("error ${IAgentBridgeCallback.INTERNAL} bridge not installed", connect(bind(), 10_123))
     }
 
     @Test
@@ -152,7 +163,7 @@ class AgentBridgeServiceTest {
                 throw IllegalStateException("secret internal detail")
         }, FakeLauncher(), FakeSpaces())
         approve(10_123)
-        val r = connect(10_123)
+        val r = connect(bind(), 10_123)
         assertTrue(r.startsWith("error ${IAgentBridgeCallback.API_FAILED} "), r)
         assertFalse(r.contains("secret"), r)
     }
@@ -161,9 +172,10 @@ class AgentBridgeServiceTest {
     fun throwingCallbackIsSwallowed() {
         install()
         approve(10_123)
+        val b = bind()
         val latch = CountDownLatch(1)
         ShadowBinder.setCallingUid(10_123)
-        bridge().connect(object : IAgentBridgeCallback.Stub() {
+        b.connect(object : IAgentBridgeCallback.Stub() {
             override fun onReady(baseUrl: String, apiKey: String) {
                 latch.countDown()
                 throw android.os.RemoteException("client died")
@@ -173,31 +185,51 @@ class AgentBridgeServiceTest {
         })
         assertTrue(latch.await(5, TimeUnit.SECONDS))
         // The service still answers afterwards.
-        assertTrue(connect(10_123).startsWith("ready "))
+        assertTrue(connect(b, 10_123).startsWith("ready "))
     }
 
     @Test
     fun unbindClosesListener() {
         install()
         approve(10_123)
-        connect(10_123)
-        assertFalse(service.get().onUnbind(intent))
-        waitUntil { synchronized(gateway) { gateway.listenCalls.contains("") } }
-        assertEquals(listOf(BridgeController.LISTEN, ""), synchronized(gateway) { gateway.listenCalls.toList() })
+        connect(bind(), 10_123)
+        unbind()
+        waitUntil { "" in listenCalls() }
+        assertEquals(listOf(BridgeController.LISTEN, ""), listenCalls())
     }
 
     @Test
-    fun unbindClosesListenerEvenWhenServiceIsDestroyed() {
+    fun unbindOfOneIntentKeepsListenerWhileAnotherIntentIsBound() {
         val queued = StandardTestDispatcher()
         AgentBridge.unbindDispatcher = queued
         install()
         approve(10_123)
-        connect(10_123)
-        service.get().onUnbind(intent)
+        val a = bind(intent)
+        bind(otherIntent)
+        assertTrue(connect(a, 10_123).startsWith("ready "))
+        // Another app (no approval needed to bind) unbinds its own, different intent.
+        unbind(otherIntent)
+        queued.scheduler.advanceUntilIdle()
+        Thread.sleep(100)
+        assertEquals(listOf(BridgeController.LISTEN), listenCalls())
+        // Once no binding of any kind remains, the listener closes.
+        unbind(intent)
+        queued.scheduler.advanceUntilIdle()
+        waitUntil { "" in listenCalls() }
+    }
+
+    @Test
+    fun destroyClosesListener() {
+        val queued = StandardTestDispatcher()
+        AgentBridge.unbindDispatcher = queued
+        install()
+        approve(10_123)
+        connect(bind(), 10_123)
+        unbind()
         // The system destroys the service before the queued close gets to run.
         service.destroy()
         queued.scheduler.advanceUntilIdle()
-        waitUntil { synchronized(gateway) { gateway.listenCalls.contains("") } }
+        waitUntil { "" in listenCalls() }
     }
 
     @Test
@@ -206,14 +238,29 @@ class AgentBridgeServiceTest {
         AgentBridge.unbindDispatcher = queued
         install()
         approve(10_123)
-        connect(10_123)
+        connect(bind(), 10_123)
         // The last client unbinds; the close is decided but has not run yet.
-        service.get().onUnbind(intent)
+        unbind()
         // A new client binds and connects before it runs.
-        assertTrue(connect(10_123).startsWith("ready "))
+        assertTrue(connect(bind(), 10_123).startsWith("ready "))
         queued.scheduler.advanceUntilIdle()
         Thread.sleep(100)
-        assertFalse(synchronized(gateway) { gateway.listenCalls.contains("") }, "listener closed under a new client")
+        assertFalse("" in listenCalls(), "listener closed under a new client")
+    }
+
+    @Test
+    fun connectFinishingAfterLastUnbindClosesListener() {
+        val queued = StandardTestDispatcher()
+        AgentBridge.unbindDispatcher = queued
+        install()
+        approve(10_123)
+        val b = bind()
+        // The last binding goes before the connect runs; its close finds nothing to close.
+        unbind()
+        queued.scheduler.advanceUntilIdle()
+        assertTrue(connect(b, 10_123).startsWith("ready "))
+        // The connect opened a listener nobody holds: it closes it itself.
+        assertEquals(listOf(BridgeController.LISTEN, ""), listenCalls())
     }
 
     @Test

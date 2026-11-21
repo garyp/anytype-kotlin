@@ -34,29 +34,34 @@ class AgentBridgeService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder {
-        AgentBridge.bindGeneration.incrementAndGet()
+        AgentBridge.activeBindings.incrementAndGet()
         return binder
     }
 
     /**
-     * Closes heart's listener once the last client has gone. A client that binds before the
-     * close runs bumps the generation, and the close is skipped. A residual window remains:
-     * a bind that lands after the generation check but before [BridgeController.onAllUnbound]
-     * takes its lock still loses its listener. Clients reconnect on failure, so that is accepted.
+     * Called once the last client bound with an intent [Intent.filterEquals] to [intent] has gone,
+     * not when every client has: an app needs no approval to bind with a different intent. The
+     * listener therefore closes only when [AgentBridge.activeBindings] reaches zero, and the
+     * controller re-checks that under its mutex, so a client that binds before the close runs
+     * keeps its listener.
      */
     override fun onUnbind(intent: Intent?): Boolean {
-        val generation = AgentBridge.bindGeneration.get()
-        val controller = AgentBridge.controller(this) ?: return false
-        // Not the service scope: the system destroys the service right after this unbind.
-        AgentBridge.backgroundScope.launch(AgentBridge.unbindDispatcher) {
-            if (AgentBridge.bindGeneration.get() == generation) controller.onAllUnbound()
-        }
+        if (AgentBridge.activeBindings.decrementAndGet() <= 0) closeIfIdle()
         return false
     }
 
     override fun onDestroy() {
+        // A bound-only service is destroyed only after its last binding of any intent has gone.
+        AgentBridge.activeBindings.set(0)
+        closeIfIdle()
         scope.cancel()
         super.onDestroy()
+    }
+
+    private fun closeIfIdle() {
+        val controller = AgentBridge.controller(this) ?: return
+        // Not the service scope: the system destroys the service right after the last unbind.
+        AgentBridge.backgroundScope.launch(AgentBridge.unbindDispatcher) { controller.onAllUnbound() }
     }
 
     private suspend fun deliver(cb: IAgentBridgeCallback, uid: Int) {

@@ -13,21 +13,34 @@ fun interface CallerCheck {
     fun approved(uid: Int, accountId: String): Approval?
 }
 
+/** Test seam over [CallerVerifier.approvedAnywhere]. */
+fun interface ApprovedAnywhere {
+    fun approvedAnywhere(uid: Int): Boolean
+}
+
 /**
  * Connect and unbind logic of the agent bridge.
  *
- * Every connect runs under one [Mutex]: start the account, check the caller's approval for that
- * account, sweep keys pending revocation, make sure heart's local API listens, and hand out the
- * caller's key. Blocking work (gateway, approvals store, [probe]) runs on [dispatcher].
+ * Every connect runs under one [Mutex]: turn away a caller approved under no account at all
+ * (it must not start the account or learn its state), start the account, check the caller's
+ * approval for that account, sweep keys pending revocation, make sure heart's local API listens,
+ * and hand out the caller's key. Blocking work (gateway, approvals store, [probe]) runs on
+ * [dispatcher].
+ *
+ * [idle] is true when no client is bound to the service. It is read under the mutex, so closing
+ * the listener and a new connect never interleave.
  */
 class BridgeController(
     private val gateway: LocalApiGateway,
     private val launcher: AccountLauncher,
     private val approvals: AgentApprovals,
     private val callerCheck: CallerCheck,
+    private val approvedAnywhere: ApprovedAnywhere,
     /** True when something accepts connections at the given host:port. */
     private val probe: (String) -> Boolean,
-    private val dispatcher: CoroutineDispatcher
+    private val dispatcher: CoroutineDispatcher,
+    /** True when no client binding of any kind remains. */
+    private val idle: () -> Boolean = { false }
 ) {
 
     sealed interface ConnectResult {
@@ -42,7 +55,7 @@ class BridgeController(
     private var listenAddr: String? = null
 
     suspend fun connect(uid: Int): ConnectResult = mutex.withLock {
-        try {
+        val result = try {
             connectLocked(uid)
         } catch (e: CancellationException) {
             throw e
@@ -50,9 +63,18 @@ class BridgeController(
             Log.w(TAG, "connect failed", e)
             ConnectResult.Error(IAgentBridgeCallback.INTERNAL, e.message ?: e.javaClass.simpleName)
         }
+        // The last client unbound while this connect ran, and the close it triggered may have
+        // found nothing to close yet: close whatever this connect opened.
+        if (idle()) closeListenerLocked()
+        result
     }
 
     private suspend fun connectLocked(uid: Int): ConnectResult {
+        // 0. A caller approved under no account learns nothing, and starts nothing.
+        if (!withContext(dispatcher) { approvedAnywhere.approvedAnywhere(uid) }) {
+            return ConnectResult.ApprovalRequired
+        }
+
         // 1. Account.
         val account = try {
             launcher.ensureStarted()
@@ -153,18 +175,22 @@ class BridgeController(
         return ConnectResult.Error(IAgentBridgeCallback.API_FAILED, e.message ?: "$step failed")
     }
 
-    /** Closes the listener once the last client has unbound. */
+    /** Closes the listener if, under the mutex, [idle] still says no client is bound. */
     suspend fun onAllUnbound() {
         mutex.withLock {
-            if (listenAddr == null) return@withLock
-            listenAddr = null
-            try {
-                withContext(dispatcher) { gateway.setListenAddr("") }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "closing the listener failed", e)
-            }
+            if (idle()) closeListenerLocked()
+        }
+    }
+
+    private suspend fun closeListenerLocked() {
+        if (listenAddr == null) return
+        listenAddr = null
+        try {
+            withContext(dispatcher) { gateway.setListenAddr("") }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "closing the listener failed", e)
         }
     }
 
