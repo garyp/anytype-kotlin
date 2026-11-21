@@ -72,6 +72,7 @@ import com.anytypeio.anytype.agentbridge.AgentApprovals
 import com.anytypeio.anytype.agentbridge.AgentBridge
 import com.anytypeio.anytype.agentbridge.Approval
 import com.anytypeio.anytype.agentbridge.CallerVerifier
+import com.anytypeio.anytype.agentbridge.access.AgentAccessActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -153,7 +154,8 @@ class AgentApprovalActivity : ComponentActivity() {
                             onAllSpaces = { state = state.setAllSpaces(it) },
                             onAccess = { state = state.setAccess(it) },
                             onAllow = ::onAllow,
-                            onDeny = ::onDeny
+                            onDeny = ::onDeny,
+                            onManageAccess = ::onManageAccess
                         )
                     )
                 }
@@ -249,6 +251,10 @@ class AgentApprovalActivity : ComponentActivity() {
         }
     }
 
+    private fun onManageAccess() {
+        startActivity(android.content.Intent(this, AgentAccessActivity::class.java))
+    }
+
     private fun onAllowDown(ev: MotionEvent) {
         val obscured = ev.flags and
             (MotionEvent.FLAG_WINDOW_IS_OBSCURED or MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED) != 0
@@ -282,6 +288,7 @@ class AgentApprovalActivity : ComponentActivity() {
         internal const val SIGN_IN_FIRST = "Sign in to Anytype first"
         internal const val UNVERIFIED = "Anytype couldn't verify the app that asked for access"
         internal const val FAILED = "Something went wrong. Try again."
+        internal const val MANAGE_ACCESS = "Manage app access"
         internal const val ICON_TAG = "agent_app_icon"
         private const val ICON_DP = 40
         private const val ARM_DELAY_MS = 750L
@@ -337,7 +344,8 @@ private class ConsentUi(
     val onAllSpaces: (Boolean) -> Unit,
     val onAccess: (Access) -> Unit,
     val onAllow: () -> Unit,
-    val onDeny: () -> Unit
+    val onDeny: () -> Unit,
+    val onManageAccess: () -> Unit
 )
 
 @RequiresApi(35)
@@ -475,6 +483,9 @@ private fun ConsentContent(state: ConsentState, ui: ConsentUi) {
                         false
                     }
             ) { Text("Allow") }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+            TextButton(onClick = ui.onManageAccess, enabled = enabled) { Text(AgentApprovalActivity.MANAGE_ACCESS) }
         }
     }
 }

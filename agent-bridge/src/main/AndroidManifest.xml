@@ -31,6 +31,18 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!-- Lists the apps the user approved and revokes them; also the app's "preferences" for the system. -->
+        <activity
+            android:name="com.anytypeio.anytype.agentbridge.access.AgentAccessActivity"
+            android:enabled="@bool/agent_bridge_enabled"
+            android:exported="true"
+            tools:targetApi="35">
+            <intent-filter>
+                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
     </application>
 
 </manifest>

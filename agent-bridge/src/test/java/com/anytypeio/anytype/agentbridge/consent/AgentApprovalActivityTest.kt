@@ -377,6 +377,20 @@ class AgentApprovalActivityTest {
         )
     }
 
+    @Test
+    fun footerLinkOpensAccessScreen() {
+        install()
+        val scenario = launchShown()
+        awaitText("All spaces")
+        compose.onNodeWithText("Manage app access").performScrollTo().performClick()
+        var next: Intent? = null
+        scenario.onActivity { next = shadowOf(it).nextStartedActivity }
+        assertEquals(
+            com.anytypeio.anytype.agentbridge.access.AgentAccessActivity::class.java.name,
+            next?.component?.className
+        )
+    }
+
     private companion object {
         const val PKG = "com.agent"
         const val CERT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
