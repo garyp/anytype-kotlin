@@ -31,6 +31,7 @@ dependencies {
     implementation libs.compose
     implementation libs.composeFoundation
     implementation libs.composeMaterial3
+    implementation libs.activityCompose
 
     testImplementation libs.junit
     testImplementation libs.robolectricBridge
@@ -39,4 +40,6 @@ dependencies {
     testImplementation libs.coroutines
     testImplementation libs.coroutineTesting
     testImplementation libs.mockitoKotlin
+    testImplementation libs.composeUiTestJunit4
+    testImplementation libs.composeUiTestManifest
 }

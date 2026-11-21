@@ -16,6 +16,21 @@
                 <action android:name="io.anytype.agentbridge.BIND" />
             </intent-filter>
         </service>
+
+        <!-- Agent apps start this for result, with setShareIdentityEnabled(true), to ask for access. -->
+        <activity
+            android:name="com.anytypeio.anytype.agentbridge.consent.AgentApprovalActivity"
+            android:enabled="@bool/agent_bridge_enabled"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            tools:targetApi="35">
+            <intent-filter>
+                <action android:name="io.anytype.agentbridge.APPROVE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
     </application>
 
 </manifest>

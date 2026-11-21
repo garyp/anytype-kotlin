@@ -81,6 +81,8 @@ compose = { module = "androidx.compose.ui:ui", version.ref = "androidxComposeVer
 composeTooling = { module = "androidx.compose.ui:ui-tooling", version.ref = "androidxComposeVersion" }
 composeToolingPreview = { module = "androidx.compose.ui:ui-tooling-preview", version.ref = "androidxComposeVersion" }
 composeFoundation = { module = "androidx.compose.foundation:foundation", version.ref = "androidxComposeVersion" }
+composeUiTestJunit4 = { module = "androidx.compose.ui:ui-test-junit4", version.ref = "androidxComposeVersion" }
+composeUiTestManifest = { module = "androidx.compose.ui:ui-test-manifest", version.ref = "androidxComposeVersion" }
 composeMaterial = { module = "androidx.compose.material:material", version.ref = "composeMaterialVersion" }
 composeMaterial3 = { module = "androidx.compose.material3:material3", version.ref = "composeMaterial3Version" }
 composeAccompanistPager = { module = "com.google.accompanist:accompanist-pager", version.ref = "accompanistVersion" }
