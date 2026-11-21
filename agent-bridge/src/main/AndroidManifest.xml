@@ -1,2 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- The consent and access screens hide other apps' overlays (tapjacking). -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
+
+    <application>
+        <!-- Agent apps bind here. Disabled below API 35, where caller verification is missing. -->
+        <service
+            android:name="com.anytypeio.anytype.agentbridge.AgentBridgeService"
+            android:enabled="@bool/agent_bridge_enabled"
+            android:exported="true"
+            tools:targetApi="35">
+            <intent-filter>
+                <action android:name="io.anytype.agentbridge.BIND" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>
