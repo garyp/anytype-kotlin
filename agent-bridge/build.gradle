@@ -1,0 +1,41 @@
+plugins {
+    id "com.android.library"
+    id "kotlin-android"
+    alias(libs.plugins.compose.compiler)
+}
+
+android {
+    namespace 'com.anytypeio.anytype.agentbridge'
+
+    // Same override as :agent-bridge-client (see the comment in its build.gradle).
+    compileSdk { version = release(37) { minorApiLevel = 2 } }
+
+    buildFeatures {
+        compose true
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+        unitTests.includeAndroidResources = true
+        unitTests.all { it.jvmArgs '--add-opens=java.base/java.net=ALL-UNNAMED' }
+    }
+}
+
+dependencies {
+    api project(':agent-bridge-client')
+
+    implementation libs.coroutines
+    implementation libs.androidxCore
+    implementation libs.lifecycleViewModel
+    implementation libs.lifecycleRuntime
+    implementation libs.compose
+    implementation libs.composeFoundation
+    implementation libs.composeMaterial3
+
+    testImplementation libs.junit
+    testImplementation libs.robolectricBridge
+    testImplementation libs.androidXTestCore
+    testImplementation libs.kotlinTest
+    testImplementation libs.coroutines
+    testImplementation libs.mockitoKotlin
+}
