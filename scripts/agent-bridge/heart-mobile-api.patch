@@ -1,0 +1,20 @@
+--- a/clientlibrary/service/lib.go	2026-11-21 11:47:15.531533065 +0000
++++ b/clientlibrary/service/lib.go	2026-11-21 11:47:15.622048118 +0000
+@@ -12,6 +12,7 @@
+ 	"github.com/gogo/protobuf/proto"
+ 
+ 	"github.com/anyproto/anytype-heart/core"
++	"github.com/anyproto/anytype-heart/core/api"
+ 	"github.com/anyproto/anytype-heart/core/event"
+ 	"github.com/anyproto/anytype-heart/metrics"
+ 	"github.com/anyproto/anytype-heart/pb"
+@@ -44,6 +45,9 @@
+ 				metrics.SharedLongMethodsInterceptor,
+ 			},
+ 		})
++	// harness patch: cmd/grpcserver does this; the mobile library did not, so the
++	// JSON API nil-derefs mw in ensureAuthenticated on every authed request.
++	api.SetMiddlewareParams(mw)
+ 	if addr, ok := os.LookupEnv("ANYPROF"); ok && addr != "" {
+ 		RunDebugServer(addr)
+ 	}
