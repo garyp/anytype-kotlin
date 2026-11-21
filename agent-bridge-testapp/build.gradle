@@ -65,6 +65,7 @@ dependencies {
     testImplementation libs.androidXTestCore
     testImplementation libs.kotlinTest
     testImplementation libs.coroutines
+    testImplementation libs.composeUiTestJunit4
 
     androidTestImplementation libs.androidJUnit
     androidTestImplementation libs.androidXTestRunner

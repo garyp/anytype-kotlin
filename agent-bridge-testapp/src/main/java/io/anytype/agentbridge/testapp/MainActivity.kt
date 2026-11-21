@@ -30,8 +30,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import io.anytype.agentbridge.client.AnytypeBridge
 import io.anytype.agentbridge.client.BridgeException
@@ -112,14 +110,15 @@ class MainActivity : ComponentActivity() {
                     addLog("unbound")
                 }) { Text("Unbind") }
             }
-            Column(
-                Modifier.fillMaxWidth().weight(1f)
-                    .semantics { testTagsAsResourceId = true }
-                    .testTag("log")
-                    .verticalScroll(rememberScrollState())
-            ) {
-                log.forEach { Text(it) }
-            }
+            LogView(log, Modifier.weight(1f))
         }
+    }
+}
+
+/** The log as ONE Text node (lines joined), so a test can assert on the tag `log` directly. */
+@Composable
+fun LogView(lines: List<String>, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+        Text(lines.joinToString("\n"), Modifier.testTag("log"))
     }
 }
