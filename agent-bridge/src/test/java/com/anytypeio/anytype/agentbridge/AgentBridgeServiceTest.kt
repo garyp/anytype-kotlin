@@ -104,8 +104,14 @@ class AgentBridgeServiceTest {
     /** What the system does for the first client binding with [i]. */
     private fun bind(i: Intent = intent): IAgentBridge = IAgentBridge.Stub.asInterface(service.get().onBind(i))
 
-    /** What the system does once the last client binding with [i] has gone. */
-    private fun unbind(i: Intent = intent) = assertFalse(service.get().onUnbind(i))
+    /**
+     * What the system does once the last client binding with [i] has gone. The service asks for
+     * onRebind, so the system calls back on every later bind with [i] while the service lives.
+     */
+    private fun unbind(i: Intent = intent) = assertTrue(service.get().onUnbind(i))
+
+    /** What the system does for a new bind with [i] after an onUnbind that returned true. */
+    private fun rebind(i: Intent = intent) = service.get().onRebind(i)
 
     private fun connect(bridge: IAgentBridge, uid: Int): String {
         val rec = Recorder()
@@ -219,6 +225,29 @@ class AgentBridgeServiceTest {
     }
 
     @Test
+    fun rebindIsCountedSoAnotherIntentsUnbindKeepsListener() {
+        val queued = StandardTestDispatcher()
+        AgentBridge.unbindDispatcher = queued
+        install()
+        approve(10_123)
+        val x = bind(intent)
+        bind(otherIntent)
+        // The agent drops X and binds it again; Y keeps the service alive, so the system rebinds.
+        unbind(intent)
+        rebind(intent)
+        assertTrue(connect(x, 10_123).startsWith("ready "))
+        // The other app unbinds Y.
+        unbind(otherIntent)
+        queued.scheduler.advanceUntilIdle()
+        Thread.sleep(100)
+        assertEquals(listOf(BridgeController.LISTEN), listenCalls())
+        // The agent goes too: now nothing is bound.
+        unbind(intent)
+        queued.scheduler.advanceUntilIdle()
+        waitUntil { "" in listenCalls() }
+    }
+
+    @Test
     fun destroyClosesListener() {
         val queued = StandardTestDispatcher()
         AgentBridge.unbindDispatcher = queued
@@ -238,11 +267,14 @@ class AgentBridgeServiceTest {
         AgentBridge.unbindDispatcher = queued
         install()
         approve(10_123)
-        connect(bind(), 10_123)
+        val b = bind()
+        connect(b, 10_123)
         // The last client unbinds; the close is decided but has not run yet.
         unbind()
-        // A new client binds and connects before it runs.
-        assertTrue(connect(bind(), 10_123).startsWith("ready "))
+        // A new client binds (the system rebinds and hands out the cached binder) and connects
+        // before the close runs.
+        rebind()
+        assertTrue(connect(b, 10_123).startsWith("ready "))
         queued.scheduler.advanceUntilIdle()
         Thread.sleep(100)
         assertFalse("" in listenCalls(), "listener closed under a new client")

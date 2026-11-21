@@ -40,7 +40,7 @@ class BridgeController(
     private val probe: (String) -> Boolean,
     private val dispatcher: CoroutineDispatcher,
     /** True when no client binding of any kind remains. */
-    private val idle: () -> Boolean = { false }
+    private val idle: () -> Boolean
 ) {
 
     sealed interface ConnectResult {

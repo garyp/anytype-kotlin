@@ -397,6 +397,7 @@ class BridgeControllerTest {
             approvals = approvals,
             callerCheck = { uid, acc -> approved[uid to acc] },
             approvedAnywhere = { true },
+            idle = { false },
             probe = { true },
             dispatcher = StandardTestDispatcher(testScheduler)
         )

@@ -38,16 +38,24 @@ class AgentBridgeService : Service() {
         return binder
     }
 
+    /** A new bind with an intent whose clients had all gone, while the service stayed alive. */
+    override fun onRebind(intent: Intent?) {
+        AgentBridge.activeBindings.incrementAndGet()
+    }
+
     /**
      * Called once the last client bound with an intent [Intent.filterEquals] to [intent] has gone,
      * not when every client has: an app needs no approval to bind with a different intent. The
      * listener therefore closes only when [AgentBridge.activeBindings] reaches zero, and the
      * controller re-checks that under its mutex, so a client that binds before the close runs
      * keeps its listener.
+     *
+     * Returns true so that a later bind with the same intent calls [onRebind]. With false the
+     * system hands out the cached binder silently, and the count would miss that binding.
      */
     override fun onUnbind(intent: Intent?): Boolean {
         if (AgentBridge.activeBindings.decrementAndGet() <= 0) closeIfIdle()
-        return false
+        return true
     }
 
     override fun onDestroy() {
