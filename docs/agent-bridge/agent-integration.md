@@ -3,7 +3,9 @@
 How an agent app on the same Android phone gets read/write access to the user's Anytype data
 through the agent bridge. Design background: `docs/superpowers/specs/2026-11-21-agent-bridge-design.md`.
 
-Requirements: Android 15 (API 35) or newer, both apps in the same user profile, and the fork of
+Requirements: the Anytype bridge needs Android 15 (API 35) or newer. The agent device is the same
+phone, but the consent identity sharing (`approvalOptions()`) needs API 34+ in the agent app's
+runtime, so the agent effectively runs on API 35+ too. Both apps in the same user profile, and the fork of
 Anytype installed. The debug build (`io.anytype.app.dev`) installs beside the Play Store app.
 
 ## 1. Depend on the client library

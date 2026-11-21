@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityOptionsCompat
 import androidx.core.content.ContextCompat
 import io.anytype.agentbridge.IAgentBridge
@@ -179,7 +180,7 @@ class AnytypeBridge(
     private fun doBind(intent: Intent, conn: ServiceConnection): Boolean {
         val executor = ContextCompat.getMainExecutor(context)
         return when {
-            Build.VERSION.SDK_INT >= 33 -> context.bindService(
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> context.bindService(
                 intent,
                 Context.BindServiceFlags.of(
                     (BIND_AUTO_CREATE or Context.BIND_INCLUDE_CAPABILITIES).toLong()
@@ -263,6 +264,7 @@ class AnytypeBridge(
             ActivityOptionsCompat.makeBasic()
         }
 
+    @RequiresApi(34)
     private object Api34 {
         fun shareIdentityBundle(): Bundle =
             ActivityOptions.makeBasic().setShareIdentityEnabled(true).toBundle()

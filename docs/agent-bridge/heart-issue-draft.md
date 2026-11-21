@@ -9,7 +9,9 @@ Not filed. The fork owner decides whether to file it at anyproto/anytype-heart.
 ## Symptom
 
 In the mobile library (the gomobile AAR used by Android, and the same code path on iOS), the local
-JSON API starts and reports success, for example through `ApiStartServer` / `ApiChangeListenAddr`.
+JSON API starts and reports success. It is started through the `jsonApiListenAddr` field of
+`Rpc.Account.Create` / `Rpc.Account.Select`, or the `Rpc.Account.ChangeJsonApiAddr` RPC (gomobile
+`Service.accountChangeJsonApiAddr`).
 Every request that passes the key check then fails with an empty HTTP 500 and no body:
 
 ```
