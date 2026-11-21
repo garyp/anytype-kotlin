@@ -1,6 +1,7 @@
 package com.anytypeio.anytype.agentbridge
 
 import android.content.pm.PackageManager
+import androidx.annotation.RequiresApi
 import android.content.pm.PackageManager.CERT_INPUT_SHA256
 
 /**
@@ -9,6 +10,7 @@ import android.content.pm.PackageManager.CERT_INPUT_SHA256
  * [certCheck] is a test seam; the default asks the platform whether the UID is signed
  * with the given SHA-256 certificate digest.
  */
+@RequiresApi(35)
 class CallerVerifier(
     private val pm: PackageManager,
     private val approvals: AgentApprovals,

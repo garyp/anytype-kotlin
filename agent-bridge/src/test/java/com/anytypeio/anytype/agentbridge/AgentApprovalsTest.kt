@@ -103,4 +103,25 @@ class AgentApprovalsTest {
         assertEquals("agent:com.x:", KeyNames.prefix("com.x"))
         assertNotNull(KeyNames)
     }
+
+    @Test
+    fun concurrentInstancesLoseNoUpdates() {
+        val stores = listOf(store(), store())
+        val n = 40
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+        val tasks = (0 until n).map { i ->
+            java.util.concurrent.Callable {
+                val s = stores[i % 2]
+                s.approve(approval(pkg = "com.p$i"))
+                s.revoke("A", "com.p$i")
+                if (i % 2 == 0) s.clearPendingRevoke("A", "com.p$i")
+            }
+        }
+        pool.invokeAll(tasks).forEach { it.get() }
+        pool.shutdown()
+        val fresh = store()
+        assertTrue(fresh.all().isEmpty())
+        val expected = (0 until n).filter { it % 2 == 1 }.map { "com.p$it" }.toSet()
+        assertEquals(expected, fresh.pendingRevokes("A"))
+    }
 }

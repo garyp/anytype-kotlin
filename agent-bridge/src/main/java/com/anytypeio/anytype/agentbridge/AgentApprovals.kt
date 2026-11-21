@@ -21,51 +21,45 @@ class AgentApprovals(
         val deniedUntil: MutableMap<String, Long> = mutableMapOf()
     )
 
-    @Synchronized
     fun find(accountId: String, pkg: String): Approval? =
         read().approvals.firstOrNull { it.accountId == accountId && it.packageName == pkg }
 
-    @Synchronized
     fun all(): List<Approval> = read().approvals.toList()
 
-    @Synchronized
     fun approve(a: Approval) = update {
         approvals.removeAll { it.accountId == a.accountId && it.packageName == a.packageName }
         approvals.add(a)
         pending.add(PendingRevoke(a.accountId, a.packageName))
     }
 
-    @Synchronized
     fun revoke(accountId: String, pkg: String) = update {
         approvals.removeAll { it.accountId == accountId && it.packageName == pkg }
         pending.add(PendingRevoke(accountId, pkg))
     }
 
-    @Synchronized
     fun pendingRevokes(accountId: String): Set<String> =
         read().pending.filter { it.accountId == accountId }.map { it.packageName }.toSet()
 
-    @Synchronized
     fun clearPendingRevoke(accountId: String, pkg: String) = update {
         pending.remove(PendingRevoke(accountId, pkg))
     }
 
-    @Synchronized
     fun deny(pkg: String) = update { deniedUntil[pkg] = clock() + DENIAL_COOLDOWN_MS }
 
-    @Synchronized
     fun isInDenialCooldown(pkg: String): Boolean {
         val until = read().deniedUntil[pkg] ?: return false
         return until > clock()
     }
 
-    private fun update(block: State.() -> Unit) {
+    private fun update(block: State.() -> Unit) = synchronized(LOCK) {
         val s = read()
         s.block()
         write(s)
     }
 
-    private fun read(): State {
+    private fun read(): State = synchronized(LOCK) { readLocked() }
+
+    private fun readLocked(): State {
         val s = State()
         val raw = prefs.getString(KEY, null) ?: return s
         try {
@@ -133,6 +127,8 @@ class AgentApprovals(
     }
 
     companion object {
+        /** Process-wide: several instances share one prefs blob, so every read-modify-write serializes here. */
+        private val LOCK = Any()
         private const val PREFS = "agent_bridge"
         private const val KEY = "state"
         const val DENIAL_COOLDOWN_MS = 30_000L
