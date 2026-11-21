@@ -16,6 +16,7 @@ android {
     // as :app, which compiles at 36, may depend on it. Without this, AGP's AAR metadata check
     // demands that every consumer compile at 37.
     defaultConfig {
+        consumerProguardFiles 'consumer-rules.pro'
         aarMetadata {
             minCompileSdk = 36
         }

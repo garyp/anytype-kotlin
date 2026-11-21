@@ -33,3 +33,9 @@ if [ "$UNPATCHED" = 1 ]; then
 fi
 (cd "$HERE" && go build "${MODARGS[@]}" -tags "nosigar nowatchdog" -o "$OUT/bin/$BIN" .)
 echo "built $OUT/bin/$BIN" >&2
+if [ "$UNPATCHED" = 0 ]; then
+  # heart's own `anytype` CLI: `anytype tools --tier small` prints the small-tier tool manifest
+  # (docs/agent-bridge/small-tools-manifest.json).
+  (cd "$HERE" && go build -tags "nosigar nowatchdog" -o "$OUT/bin/anytype" github.com/anyproto/anytype-heart/cmd/anytype)
+  echo "built $OUT/bin/anytype" >&2
+fi

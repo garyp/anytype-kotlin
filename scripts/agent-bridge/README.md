@@ -56,3 +56,58 @@ Behaviour verified with curl against heart v0.51.6 (patched):
 - MCP args (from `tools/list`): create{space,type,name,markdown,properties}, find{space,query,type,filter,limit},
   read{object,space,mode}, describe{space,type,...}, set_properties{object,...}, add_blocks{object,markdown,after,under,space},
   edit_text{object,find,replace,block,space}.
+
+## Building the patched heart for Android
+
+`build-heart-android.sh [--abis arm64-v8a,x86_64]` fetches heart, applies `heart-mobile-api.patch`,
+builds tantivy for each Android target, runs `gomobile bind` and publishes the AAR to Maven Local
+as `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1`. All four ABIs take 30-60+ minutes;
+`--abis` narrows it. `mavenLocal()` is the first repository, and `middlewareVersion` in
+`gradle/libs.versions.toml` points at that version. Needs Go, Rust, the Android NDK and Maven.
+
+## Building and testing the app
+
+Gradle needs JDK 17 and, in this environment, `--no-configuration-cache`:
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANDROID_HOME=/opt/android-sdk
+G="./gradlew --no-configuration-cache"
+$G :app:assembleDebug :agent-bridge-testapp:assembleDebug
+scripts/agent-bridge/run-contract-tests.sh
+```
+
+On an emulator or phone (Android 15+):
+
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk        # io.anytype.app.dev
+adb install -r agent-bridge-testapp/build/outputs/apk/debug/*.apk
+$G :agent-bridge-testapp:connectedDebugAndroidTest
+```
+
+Log in to a (local-only) account in Anytype first. The instrumented test drives the approval screen
+and a read/write flow through the bridge. It has been compiled but not run yet (no emulator in the
+build environment).
+
+## Upgrading heart
+
+1. Bump the version in `fetch-heart-src.sh` and `build-heart-android.sh` (`HEART_VERSION`,
+   `VERSION`), and `middlewareVersion` in `gradle/libs.versions.toml`.
+2. Check the patch still applies; rebuild the harness (`heart-harness/build.sh`) and the AAR.
+3. Rerun `run-contract-tests.sh`.
+4. Regenerate `docs/agent-bridge/small-tools-manifest.json` (see `docs/agent-bridge/agent-integration.md`).
+
+## Dropping the patch
+
+When upstream calls `api.SetMiddlewareParams(mw)` in `clientlibrary/service`, delete
+`heart-mobile-api.patch` and the patch step in `fetch-heart-src.sh`, and depend on the official
+`anytype-heart-android` artifact. The unpatched harness (`run.sh --unpatched`) shows whether a
+given heart version still has the bug (500 means yes). The upstream issue draft is
+`docs/agent-bridge/heart-issue-draft.md` (not filed).
+
+## Accepted loopback exposure
+
+While an agent is bound, heart listens on `127.0.0.1:<port>`. Any local app can reach that port.
+Without a key it gets 401/403 and the `Anytype-Version` header. Heart's keyless pairing challenge
+cannot complete because the Android app never shows the approval it needs. The listener closes
+when the last agent binding closes. Contract tests assert that keyless REST and MCP calls are
+rejected.
