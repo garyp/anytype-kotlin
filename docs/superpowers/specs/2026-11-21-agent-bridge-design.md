@@ -49,8 +49,9 @@ Android APIs and review turned up.
 
 - **The agent:** the model, prompting, or tool selection.
 - **Old Android versions:** anything below Android 15 (API 35). The bridge stays off there.
-- **Choosing spaces at consent:** a grant covers every space. Access level is the only choice
-  (see below).
+- **Editing a grant after approval:** changing an approved agent's spaces or access level is
+  deferred. Heart's `UpdateApp` call makes it possible later. Today, the user revokes the agent
+  and approves it again.
 - **Release builds of the fork:** the user starts with the debug build
   (`io.anytype.app.dev`, which installs beside the Play Store app). Only cheap release-readiness
   is in scope: R8 keep rules for the new code.
@@ -220,8 +221,11 @@ proto sync.
       storage. It calls `ListApps` and filters by `appName == "agent:<package>:<cert8>"`, where
       `<cert8>` is the first 8 hex digits of the pinned cert digest.
       - **Several entries:** keep the newest and revoke the rest.
-      - **No entry:** call `CreateApp` with scope `JsonAPI`, grant all spaces, and the access
-        level stored with the approval.
+      - **No entry:** call `CreateApp` with scope `JsonAPI` and the grant stored with the
+        approval: either all spaces, or the chosen space IDs, plus the access level.
+      - **New approval for the same package, account and cert** (after a revoke): approving
+        marks the package's old keys for revocation, so the next connect revokes them and mints
+        a key with the new grant.
       - **Re-approval under a new cert:** the name changes, so the old key's entries match only
         by package prefix and are revoked.
    4. **Answer.** `onReady(baseUrl, apiKey)`.
@@ -257,8 +261,14 @@ proto sync.
   - `getCallingPackage()`, when present, must agree with it.
 - **The screen:** a Compose dialog in Anytype's theme. It shows:
   - the app label and icon, the package, and a short certificate fingerprint;
-  - the warning "can read [and change] all objects in all your spaces while connected";
+  - the account name, and a warning that names the grant ("can read [and change] all objects
+    in [all your spaces | N spaces] while connected");
+  - **Spaces:**
+    - an "All spaces" choice (the default), which also covers spaces created later;
+    - or a checklist of the account's spaces, from which at least one must be picked.
   - an access-level choice: Read & write (default) or Read only;
+  - a note when specific spaces are chosen: the agent can use only `/v2` and MCP, because heart
+    refuses narrowed keys on `/v1`, and it can't create spaces.
   - Allow and Don't allow buttons.
 - **Protection:**
   - The window uses `setHideOverlayWindows(true)` and `FLAG_SECURE`.
@@ -282,10 +292,25 @@ proto sync.
     system App info page, so no edit to Anytype's own settings UI is needed;
   - from the consent screen's footer link.
 
+### Space list for the consent screen
+
+- **Source:** the consent screen needs the account's spaces. The app installs a
+  `SpaceDirectory` into the module, next to the gateway and the launcher. It wraps the app's
+  existing `SpaceViewSubscriptionContainer` and returns active spaces as
+  `{spaceId, name}`.
+- **Cold start:** if the account isn't running, the consent screen starts it through
+  `AccountLauncher` first and shows a spinner. Spaces then arrive through the same warm-up the
+  OS widgets use (`awaitFirstSpacesEmission`).
+- **Logged out:** the screen says so and finishes with `RESULT_CANCELED`.
+- **IDs:** the grant stores heart's full space IDs, the ones the subscription returns.
+  - `/v2` reports short IDs. The builder verifies, against the harness, that a grant with full
+    IDs admits `/v2` and MCP calls.
+  - It also verifies that a space outside the grant gets 403.
+
 ### Approvals store
 
 - **Format:** a single JSON blob in a module-private `SharedPreferences` file. Each entry is
-  `{accountId, package, certSha256, access, approvedAt}`, plus a `deniedUntil` map and a
+  `{accountId, package, certSha256, access, allSpaces, spaceIds, approvedAt}`, plus a `deniedUntil` map and a
   `pendingRevoke` set of `{accountId, package}`.
 - **Per account:** an approval covers the Anytype account that was active when the user
   approved. After logging in to another account, the agent gets `onApprovalRequired`.
@@ -344,6 +369,8 @@ The tests run in four layers.
    - JVM tests of the client library (`McpClient`, `RestClient`) then run against it:
      initialize, `tools/list`, create a page, find it, read it, a revoked key gives 401, and
      `ChangeJsonApiAddr("")` closes the port.
+   - Narrowed grants: a key for one space can work in that space through `/v2` and MCP, gets
+     403 in another space, and gets refused on `/v1`. A read-only key can't write.
    - This validates the heart behaviour the bridge depends on, using the same heart version.
    - It is gated: the tests skip unless `ANYTYPE_HEART_BASE_URL` is set, and a script starts
      the harness and runs them.
@@ -395,8 +422,8 @@ The tests run in four layers.
 
 - **Old Android:** the bridge is enabled only on Android 15+. Below that, the components are
   disabled.
-- **Access:** all spaces, with Read & write or Read only chosen at consent. There is no per-space
-  picker.
+- **Access:** the user picks all spaces (the default) or specific spaces, and Read & write or
+  Read only, at consent. Editing a grant later is deferred.
 - **Keys:** stored only in heart and looked up by a name scheme. Approvals live in plain
   SharedPreferences, excluded from backup.
 - **Settings entry:** through Android's App info gear and the consent screen. Anytype's own
