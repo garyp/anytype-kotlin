@@ -39,13 +39,15 @@ data class ConsentState(
     fun title() = "Allow $appLabel to access Anytype?"
 
     fun body(): String {
+        val of = if (accountName.isBlank()) "" else " of $accountName"
+        // Nothing ticked yet (Allow is disabled): ask for a choice rather than describe "0 spaces".
+        if (!allSpaces && selected.isEmpty()) return "Choose the spaces$of that $appLabel can access."
         val verbs = if (access == Access.READ_WRITE) "read and change" else "read"
         val where = when {
             allSpaces -> "all your spaces"
             selected.size == 1 -> "1 space"
             else -> "${selected.size} spaces"
         }
-        val of = if (accountName.isBlank()) "" else " of $accountName"
         return "$appLabel will be able to $verbs all objects in $where$of while it is connected."
     }
 

@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -11,13 +12,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
@@ -89,6 +93,8 @@ class ConnectedAppsActivity : ComponentActivity() {
     private var accountId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Edge to edge, with system bar icons that contrast with the light or dark background.
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // No other app may draw over a screen whose buttons remove access, and no screenshots.
         window.setHideOverlayWindows(true)
@@ -190,7 +196,8 @@ class ConnectedAppsActivity : ComponentActivity() {
     @Composable
     private fun AccessContent(state: UiState, onRevoke: (Row) -> Unit) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            Column(Modifier.padding(horizontal = 16.dp)) {
+            // Android 15+ draws apps edge to edge: keep the content clear of the system bars.
+            Column(Modifier.windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 16.dp)) {
                 Spacer(Modifier.height(24.dp))
                 Text("Connected apps", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.height(16.dp))

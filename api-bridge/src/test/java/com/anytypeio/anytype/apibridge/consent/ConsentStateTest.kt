@@ -89,6 +89,15 @@ class ConsentStateTest {
             "Client will be able to read all objects in 1 space of Alice while it is connected.",
             narrow.toggleSpace("s2").body()
         )
+        // No space ticked yet: ask for a choice instead of describing access to "0 spaces".
+        assertEquals(
+            "Choose the spaces of Alice that Client can access.",
+            narrow.toggleSpace("s1").toggleSpace("s2").body()
+        )
+        assertEquals(
+            "Choose the spaces that Client can access.",
+            narrow.copy(accountName = "").toggleSpace("s1").toggleSpace("s2").body()
+        )
         assertEquals(
             "With specific spaces, the app can use the v2 API and MCP only, and cannot create spaces.",
             ConsentState.NARROWED_NOTE
