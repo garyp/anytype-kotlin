@@ -24,7 +24,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-data class Endpoint(val baseUrl: String, val apiKey: String)
+/** The local API endpoint. [toString] leaves [apiKey] out, so logging an endpoint leaks no key. */
+data class Endpoint(val baseUrl: String, val apiKey: String) {
+    override fun toString(): String = "Endpoint(baseUrl=$baseUrl, apiKey=<redacted>)"
+}
 
 /** Test seam over [PackageManager.hasSigningCertificate]. */
 internal fun interface SigningCheck {
@@ -85,6 +88,10 @@ class AnytypeBridge(
     /**
      * Binds to the bridge service if needed, then asks it for the endpoint; the binding is kept.
      * Throws [BridgeException].
+     *
+     * Cancelling the coroutine cannot interrupt a binder call already in progress: the call ends
+     * when the service answers. The service bounds that wait (about 45 seconds), then answers
+     * [IAgentBridge.INTERNAL].
      */
     suspend fun connect(): Endpoint = mutex.withLock {
         val conn = synchronized(lock) { connection } ?: bind()
@@ -169,11 +176,15 @@ class AnytypeBridge(
     }
 
     private fun toEndpoint(reply: AgentEndpoint?): Endpoint {
-        val code = reply?.code ?: IAgentBridge.INTERNAL
+        // A service with another IAgentBridge (an Anytype too old for this client) sends no reply.
+        if (reply == null) {
+            throw BridgeException.Failed(IAgentBridge.INTERNAL, "no reply: Anytype bridge too old or incompatible")
+        }
+        val code = reply.code
         if (code == IAgentBridge.APPROVAL_REQUIRED) throw BridgeException.ApprovalRequired()
         if (code != IAgentBridge.OK) throw BridgeException.Failed(code, messageFor(code))
-        val baseUrl = reply?.baseUrl
-        val apiKey = reply?.apiKey
+        val baseUrl = reply.baseUrl
+        val apiKey = reply.apiKey
         if (baseUrl == null || apiKey == null) {
             throw BridgeException.Failed(IAgentBridge.INTERNAL, "malformed reply")
         }

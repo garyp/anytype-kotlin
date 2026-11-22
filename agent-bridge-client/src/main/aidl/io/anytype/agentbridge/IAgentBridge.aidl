@@ -13,4 +13,10 @@ interface IAgentBridge {
 
     /** Blocks until the endpoint is ready. The result code is OK or one of the error codes above. */
     AgentEndpoint connect();
+
+    /**
+     * Returns VERSION. Appended after connect, so the transaction codes of earlier methods stay
+     * the same; new methods go after this one.
+     */
+    int version();
 }

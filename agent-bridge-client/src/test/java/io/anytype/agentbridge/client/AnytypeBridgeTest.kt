@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.DeadObjectException
 import android.os.Handler
 import android.os.Looper
+import android.os.Parcel
 import androidx.test.core.app.ApplicationProvider
 import io.anytype.agentbridge.AgentEndpoint
 import io.anytype.agentbridge.IAgentBridge
@@ -21,6 +22,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.Executor
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.After
@@ -89,9 +92,10 @@ class AnytypeBridgeTest {
     private val pkg = AnytypeBridge.DEFAULT_PACKAGE
 
     /** Registers a fake bridge service whose connect() runs [block]: return or throw. */
-    private fun install(block: () -> AgentEndpoint) {
+    private fun install(block: () -> AgentEndpoint?) {
         val stub = object : IAgentBridge.Stub() {
-            override fun connect(): AgentEndpoint = block()
+            override fun connect(): AgentEndpoint? = block()
+            override fun version(): Int = IAgentBridge.VERSION
         }
         val intent = Intent(AnytypeBridge.BIND_ACTION).setPackage(pkg)
         shadowOf(app).setComponentNameAndServiceForBindServiceForIntent(
@@ -136,6 +140,39 @@ class AnytypeBridgeTest {
         assertEquals(IAgentBridge.INTERNAL, e.code)
         assertEquals("malformed reply", e.msg)
         bridge.close()
+    }
+
+    @Test
+    fun nullReplyMeansAnIncompatibleBridge() {
+        // What an Anytype with another IAgentBridge (e.g. too old) answers: no reply parcel.
+        install { null }
+        val bridge = AnytypeBridge(ctx)
+        val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper { bridge.connect() } }
+        assertEquals(IAgentBridge.INTERNAL, e.code)
+        assertEquals("no reply: Anytype bridge too old or incompatible", e.msg)
+        bridge.close()
+    }
+
+    @Test
+    fun errorEndpointSurvivesAParcelRoundTrip() {
+        val parcel = Parcel.obtain()
+        try {
+            AgentEndpoint(IAgentBridge.APPROVAL_REQUIRED, null, null).writeToParcel(parcel, 0)
+            parcel.setDataPosition(0)
+            val read = AgentEndpoint.CREATOR.createFromParcel(parcel)
+            assertEquals(IAgentBridge.APPROVAL_REQUIRED, read.code)
+            assertNull(read.baseUrl)
+            assertNull(read.apiKey)
+        } finally {
+            parcel.recycle()
+        }
+    }
+
+    @Test
+    fun endpointToStringRedactsTheKey() {
+        val text = Endpoint("http://127.0.0.1:1", "secret-key").toString()
+        assertFalse(text, "secret-key" in text)
+        assertTrue(text, "http://127.0.0.1:1" in text)
     }
 
     @Test(timeout = 30_000)

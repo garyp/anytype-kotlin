@@ -240,6 +240,11 @@ class AgentBridgeServiceTest {
     }
 
     @Test
+    fun versionReturnsTheInterfaceVersion() {
+        assertEquals(IAgentBridge.VERSION, bind().version())
+    }
+
+    @Test
     fun unbindClosesListener() {
         install()
         approve(10_123)

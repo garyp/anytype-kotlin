@@ -34,6 +34,8 @@ class AgentBridgeService : Service() {
                 failure(IAgentBridge.INTERNAL)
             }
         }
+
+        override fun version(): Int = IAgentBridge.VERSION
     }
 
     private fun answer(uid: Int): AgentEndpoint {
