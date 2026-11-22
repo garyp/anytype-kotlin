@@ -9,12 +9,14 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.DeadObjectException
+import android.os.Handler
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import io.anytype.agentbridge.AgentEndpoint
 import io.anytype.agentbridge.IAgentBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.Executor
@@ -44,6 +46,7 @@ class AnytypeBridgeTest {
         var lastFlags = 0
         var lastConnection: ServiceConnection? = null
         var bindCount = 0
+        var bindThrows: RuntimeException? = null
 
         override fun bindService(
             service: Intent,
@@ -56,6 +59,7 @@ class AnytypeBridgeTest {
             lastFlags = value.toInt()
             lastConnection = conn
             bindCount++
+            bindThrows?.let { throw it }
             return baseContext.bindService(service, value.toInt(), executor, conn)
         }
 
@@ -156,8 +160,43 @@ class AnytypeBridgeTest {
             endpoint()
         }
         val bridge = AnytypeBridge(ctx)
-        connectWithLooper { bridge.connect() }
+        // Start connect() on the main thread itself (the test thread is the main looper's
+        // thread), idling the looper until it completes: the binder call must still leave it.
+        val handler = Handler(Looper.getMainLooper())
+        val main = Executor { handler.post(it) }.asCoroutineDispatcher()
+        val result = CoroutineScope(main).async { bridge.connect() }
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (!result.isCompleted) {
+            shadowOf(Looper.getMainLooper()).idle()
+            check(System.nanoTime() < deadline) { "connect() did not complete" }
+            Thread.sleep(5)
+        }
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), runBlocking { result.await() })
         assertTrue(offMain)
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun unexpectedBinderCallFailureMapsToFailedThenRebinds() {
+        var broken = true
+        install { if (broken) throw IllegalStateException("boom") else endpoint() }
+        val bridge = AnytypeBridge(ctx)
+        val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper { bridge.connect() } }
+        assertEquals(IAgentBridge.INTERNAL, e.code)
+        broken = false
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
+        assertEquals(2, ctx.bindCount)
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun bindServiceThrowingFailsWithoutWedgingLaterConnects() {
+        install { endpoint() }
+        ctx.bindThrows = IllegalArgumentException("bad intent")
+        val bridge = AnytypeBridge(ctx)
+        assertThrows(BridgeException.NotInstalled::class.java) { connectWithLooper { bridge.connect() } }
+        ctx.bindThrows = null
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
         bridge.close()
     }
 

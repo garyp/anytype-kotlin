@@ -17,6 +17,7 @@ import androidx.core.app.ActivityOptionsCompat
 import androidx.core.content.ContextCompat
 import io.anytype.agentbridge.AgentEndpoint
 import io.anytype.agentbridge.IAgentBridge
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -52,8 +53,9 @@ class AnytypeBridge(
     private val context: Context = context.applicationContext ?: context
     private val expectedCert: ByteArray? = expectedCertSha256?.let(::parseSha256)
     private val mutex = Mutex()
+    private val lock = Any()
 
-    // The current binding; a callback from an older one is ignored. Guarded by this.
+    // The current binding; a callback from an older one is ignored. Guarded by lock.
     private var connection: Conn? = null
 
     /** A binding to the service; [service] completes on onServiceConnected or fails. */
@@ -85,7 +87,7 @@ class AnytypeBridge(
      * Throws [BridgeException].
      */
     suspend fun connect(): Endpoint = mutex.withLock {
-        val conn = synchronized(this) { connection } ?: bind()
+        val conn = synchronized(lock) { connection } ?: bind()
         val bridge = try {
             conn.service.await()
         } catch (e: Throwable) {
@@ -94,9 +96,15 @@ class AnytypeBridge(
         }
         val reply: AgentEndpoint? = try {
             withContext(Dispatchers.IO) { bridge.connect() }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: RemoteException) {
             release(conn, null)
             throw BridgeException.Failed(IAgentBridge.INTERNAL, "bridge disconnected")
+        } catch (e: RuntimeException) {
+            // Any other failure of the call (e.g. a bad parcel): drop the binding, rebind next time.
+            release(conn, null)
+            throw BridgeException.Failed(IAgentBridge.INTERNAL, "bridge call failed: ${e.javaClass.simpleName}")
         }
         toEndpoint(reply)
     }
@@ -108,10 +116,11 @@ class AnytypeBridge(
             throw BridgeException.Untrusted(targetPackage)
         }
         val conn = Conn()
-        synchronized(this) { connection = conn }
+        synchronized(lock) { connection = conn }
         val ok = try {
             doBind(Intent(BIND_ACTION).setPackage(targetPackage), conn)
-        } catch (e: SecurityException) {
+        } catch (e: Exception) {
+            // SecurityException or any other refusal: no binding exists, so leave none behind.
             false
         }
         if (!ok) {
@@ -148,7 +157,7 @@ class AnytypeBridge(
      */
     private fun release(conn: Conn?, error: BridgeException?) {
         if (conn == null) return
-        synchronized(this) {
+        synchronized(lock) {
             if (connection !== conn) return
             connection = null
         }
@@ -180,11 +189,11 @@ class AnytypeBridge(
     }
 
     /** Unbinds from the service and fails a [connect] that waits for the binding. */
-    fun close() = release(synchronized(this) { connection }, null)
+    fun close() = release(synchronized(lock) { connection }, null)
 
     /** Call when the endpoint was rejected (e.g. key rotated): the next [connect] binds afresh. */
     fun markStale() = release(
-        synchronized(this) { connection },
+        synchronized(lock) { connection },
         BridgeException.Failed(IAgentBridge.INTERNAL, "endpoint marked stale")
     )
 
