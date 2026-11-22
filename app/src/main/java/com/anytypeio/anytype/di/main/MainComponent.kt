@@ -44,7 +44,7 @@ import com.anytypeio.anytype.di.feature.notifications.PushContentDependencies
 import com.anytypeio.anytype.di.feature.objects.SelectObjectTypeDependencies
 import com.anytypeio.anytype.di.feature.onboarding.OnboardingDependencies
 import com.anytypeio.anytype.di.feature.oswidgets.CreateObjectWidgetConfigDependencies
-import com.anytypeio.anytype.agentbridge.AgentBridgeDependencies
+import com.anytypeio.anytype.apibridge.ApiBridgeDependencies
 import com.anytypeio.anytype.di.feature.oswidgets.DataViewWidgetConfigDependencies
 import com.anytypeio.anytype.di.feature.oswidgets.ObjectShortcutWidgetConfigDependencies
 import com.anytypeio.anytype.di.feature.onboarding.OnboardingStartDependencies
@@ -172,7 +172,7 @@ interface MainComponent :
     SharingDependencies,
     CreateObjectFeatureDependencies,
     CreateObjectWidgetConfigDependencies,
-    AgentBridgeDependencies,
+    ApiBridgeDependencies,
     DataViewWidgetConfigDependencies,
     ObjectShortcutWidgetConfigDependencies
 {
@@ -505,8 +505,8 @@ abstract class ComponentDependenciesModule {
 
     @Binds
     @IntoMap
-    @ComponentDependenciesKey(AgentBridgeDependencies::class)
-    abstract fun provideAgentBridgeDependencies(component: MainComponent): ComponentDependencies
+    @ComponentDependenciesKey(ApiBridgeDependencies::class)
+    abstract fun provideApiBridgeDependencies(component: MainComponent): ComponentDependencies
 
     @Binds
     @IntoMap

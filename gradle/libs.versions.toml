@@ -1,5 +1,5 @@
 [versions]
-middlewareVersion = "v0.51.6-agentbridge.2"
+middlewareVersion = "v0.51.6-apibridge.1"
 kotlinVersion = "2.2.10"
 kspVersion = "2.3.4"
 
@@ -73,7 +73,7 @@ composeQrCodeVersion = '1.0.1'
 fragmentComposeVersion = "1.8.6"
 glanceVersion = "1.1.1"
 androidSvgVersion = "1.4"
-# Agent bridge test app: the MCP Kotlin SDK, and the Ktor engine and OkHttp at the versions its POM uses.
+# API bridge test app: the MCP Kotlin SDK, and the Ktor engine and OkHttp at the versions its POM uses.
 mcpKotlinClient = "0.16.0"
 ktorVersion = "3.5.2"
 okhttpVersion = "5.3.2"

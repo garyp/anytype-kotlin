@@ -1,0 +1,55 @@
+plugins {
+    id "com.android.library"
+    id "kotlin-android"
+    alias(libs.plugins.compose.compiler)
+}
+
+android {
+    namespace 'com.anytypeio.anytype.apibridge'
+
+    // Same override as :api-bridge-client (see the comment in its build.gradle).
+    compileSdk { version = release(37) { minorApiLevel = 2 } }
+
+    // The module uses no API above 36 (it compiles cleanly at compileSdk 36), so a consumer such
+    // as :app, which compiles at 36, may depend on it. Without this, AGP's AAR metadata check
+    // demands that every consumer compile at 37.
+    defaultConfig {
+        consumerProguardFiles 'consumer-rules.pro'
+        aarMetadata {
+            minCompileSdk = 36
+        }
+    }
+
+    buildFeatures {
+        compose true
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+        unitTests.includeAndroidResources = true
+        unitTests.all { it.jvmArgs '--add-opens=java.base/java.net=ALL-UNNAMED' }
+    }
+}
+
+dependencies {
+    api project(':api-bridge-client')
+
+    implementation libs.coroutines
+    implementation libs.androidxCore
+    implementation libs.lifecycleViewModel
+    implementation libs.lifecycleRuntime
+    implementation libs.compose
+    implementation libs.composeFoundation
+    implementation libs.composeMaterial3
+    implementation libs.activityCompose
+
+    testImplementation libs.junit
+    testImplementation libs.robolectricBridge
+    testImplementation libs.androidXTestCore
+    testImplementation libs.kotlinTest
+    testImplementation libs.coroutines
+    testImplementation libs.coroutineTesting
+    testImplementation libs.mockitoKotlin
+    testImplementation libs.composeUiTestJunit4
+    testImplementation libs.composeUiTestManifest
+}

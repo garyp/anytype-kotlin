@@ -79,7 +79,7 @@ class AndroidApplication : Application(), HasComponentDependencies, SingletonIma
         main.inject(this)
         // Exactly once per process, before any bridge service can bind. Builds adapters only:
         // no disk or network I/O happens here.
-        if (SDK_INT >= 35) componentManager.agentBridgeComponent.get().installer().install()
+        if (SDK_INT >= 35) componentManager.apiBridgeComponent.get().installer().install()
         ProcessLifecycleOwner.get().lifecycle.addObserver(appState)
         setupAnalytics()
         setupCrashReporter()
