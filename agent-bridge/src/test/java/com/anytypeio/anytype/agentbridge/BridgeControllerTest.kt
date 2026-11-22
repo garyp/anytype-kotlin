@@ -2,7 +2,7 @@ package com.anytypeio.anytype.agentbridge
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import io.anytype.agentbridge.IAgentBridgeCallback
+import io.anytype.agentbridge.IAgentBridge
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import java.util.concurrent.CountDownLatch
@@ -267,7 +267,7 @@ class BridgeControllerTest {
         launcher.failure = AccountStartException(AccountStartException.NOT_LOGGED_IN, "no account")
         val r = controller().connect(1000)
         val e = assertIs<BridgeController.ConnectResult.Error>(r)
-        assertEquals(IAgentBridgeCallback.NOT_LOGGED_IN, e.code)
+        assertEquals(IAgentBridge.NOT_LOGGED_IN, e.code)
         assertTrue(gateway.listenCalls.isEmpty())
     }
 
@@ -321,7 +321,7 @@ class BridgeControllerTest {
         probeResult = false
         gateway.failBinds = 1
         val failed = assertIs<BridgeController.ConnectResult.Error>(c.connect(1000))
-        assertEquals(IAgentBridgeCallback.API_FAILED, failed.code)
+        assertEquals(IAgentBridge.API_FAILED, failed.code)
         // Heart closed the old listener on the failed bind: the old address must not be reused
         // even if something answered on it.
         probeResult = true
@@ -412,7 +412,7 @@ class BridgeControllerTest {
         approvals.approve(approval()) // queues a pending revoke for com.x
         gateway.failRevoke = true
         val e = assertIs<BridgeController.ConnectResult.Error>(controller().connect(1000))
-        assertEquals(IAgentBridgeCallback.API_FAILED, e.code)
+        assertEquals(IAgentBridge.API_FAILED, e.code)
         assertTrue(gateway.apps.contains(old))
         assertTrue(gateway.created.isEmpty())
         assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
@@ -503,7 +503,7 @@ class BridgeControllerTest {
             retryScope = backgroundScope
         )
         val e = assertIs<BridgeController.ConnectResult.Error>(c.connect(1000))
-        assertEquals(IAgentBridgeCallback.API_FAILED, e.code)
+        assertEquals(IAgentBridge.API_FAILED, e.code)
     }
 
     @Test

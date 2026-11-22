@@ -4,32 +4,55 @@ import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
-import android.os.RemoteException
 import android.util.Log
 import androidx.annotation.RequiresApi
+import io.anytype.agentbridge.AgentEndpoint
 import io.anytype.agentbridge.IAgentBridge
-import io.anytype.agentbridge.IAgentBridgeCallback
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 /**
  * The exported service agent apps bind with [AgentBridge.ACTION_BIND]. The manifest enables it
  * only on API 35+ (`@bool/agent_bridge_enabled`).
+ *
+ * [IAgentBridge.connect] blocks the binder thread until the endpoint is ready. Errors travel in
+ * [AgentEndpoint.code] only; details stay in the log.
  */
 @RequiresApi(35)
 class AgentBridgeService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     private val binder = object : IAgentBridge.Stub() {
-        override fun connect(cb: IAgentBridgeCallback?) {
-            cb ?: return
+        override fun connect(): AgentEndpoint {
             // Only valid on the binder thread, before any switch.
             val uid = Binder.getCallingUid()
-            scope.launch { deliver(cb, uid) }
+            return try {
+                answer(uid)
+            } catch (e: Throwable) {
+                // Never let an exception cross the binder: the caller gets a code, nothing more.
+                Log.w(TAG, "connect from uid $uid failed", e)
+                failure(IAgentBridge.INTERNAL)
+            }
+        }
+    }
+
+    private fun answer(uid: Int): AgentEndpoint {
+        val controller = AgentBridge.controller(this)
+        if (controller == null) {
+            Log.w(TAG, "connect from uid $uid: $NOT_INSTALLED")
+            return failure(IAgentBridge.INTERNAL)
+        }
+        // Fast path, before anything that waits: a caller approved under no account must not
+        // tie up a binder thread behind the mutex or an account start.
+        if (!controller.isApprovedAnywhere(uid)) return failure(IAgentBridge.APPROVAL_REQUIRED)
+        return when (val r = runBlocking(Dispatchers.IO) { controller.connect(uid) }) {
+            is BridgeController.ConnectResult.Ready -> AgentEndpoint(IAgentBridge.OK, r.baseUrl, r.apiKey)
+            BridgeController.ConnectResult.ApprovalRequired -> failure(IAgentBridge.APPROVAL_REQUIRED)
+            is BridgeController.ConnectResult.Error -> {
+                // Details stay in the log; the third-party caller gets the code alone.
+                Log.w(TAG, "connect from uid $uid failed: ${r.code} ${genericMessage(r.code)}: ${r.message}")
+                failure(r.code)
+            }
         }
     }
 
@@ -62,45 +85,21 @@ class AgentBridgeService : Service() {
         // A bound-only service is destroyed only after its last binding of any intent has gone.
         AgentBridge.activeBindings.set(0)
         closeIfIdle()
-        scope.cancel()
         super.onDestroy()
     }
 
     private fun closeIfIdle() {
         val controller = AgentBridge.controller(this) ?: return
-        // Not the service scope: the system destroys the service right after the last unbind.
+        // Not a service scope: the system destroys the service right after the last unbind.
         AgentBridge.backgroundScope.launch(AgentBridge.unbindDispatcher) { controller.onAllUnbound() }
     }
 
-    private suspend fun deliver(cb: IAgentBridgeCallback, uid: Int) {
-        val controller = AgentBridge.controller(this)
-        if (controller == null) {
-            call { cb.onError(IAgentBridgeCallback.INTERNAL, NOT_INSTALLED) }
-            return
-        }
-        when (val r = controller.connect(uid)) {
-            is BridgeController.ConnectResult.Ready -> call { cb.onReady(r.baseUrl, r.apiKey) }
-            BridgeController.ConnectResult.ApprovalRequired -> call { cb.onApprovalRequired() }
-            is BridgeController.ConnectResult.Error -> {
-                // Details stay in the log; the third-party caller gets a generic message.
-                Log.w(TAG, "connect from uid $uid failed: ${r.code} ${r.message}")
-                call { cb.onError(r.code, genericMessage(r.code)) }
-            }
-        }
-    }
-
-    private inline fun call(block: () -> Unit) {
-        try {
-            block()
-        } catch (e: RemoteException) {
-            // The client went away; nothing to tell it.
-        }
-    }
+    private fun failure(code: Int) = AgentEndpoint(code, null, null)
 
     private fun genericMessage(code: Int) = when (code) {
-        IAgentBridgeCallback.NOT_LOGGED_IN -> "not logged in"
-        IAgentBridgeCallback.START_FAILED -> "account start failed"
-        IAgentBridgeCallback.API_FAILED -> "local API call failed"
+        IAgentBridge.NOT_LOGGED_IN -> "not logged in"
+        IAgentBridge.START_FAILED -> "account start failed"
+        IAgentBridge.API_FAILED -> "local API call failed"
         else -> "internal error"
     }
 

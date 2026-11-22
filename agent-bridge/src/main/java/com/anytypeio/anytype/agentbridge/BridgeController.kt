@@ -1,7 +1,7 @@
 package com.anytypeio.anytype.agentbridge
 
 import android.util.Log
-import io.anytype.agentbridge.IAgentBridgeCallback
+import io.anytype.agentbridge.IAgentBridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -85,6 +85,13 @@ class BridgeController(
     /** Revoke retry loops by account id; guarded by itself. */
     private val retries = mutableMapOf<String, Job>()
 
+    /**
+     * False when [uid] is approved under no account. Blocking but cheap, and takes no lock: the
+     * service answers such a caller at once, so it never waits on the mutex or starts an account.
+     * [connect] checks the same again under the mutex.
+     */
+    fun isApprovedAnywhere(uid: Int): Boolean = approvedAnywhere.approvedAnywhere(uid)
+
     suspend fun connect(uid: Int): ConnectResult = mutex.withLock {
         val result = try {
             connectLocked(uid)
@@ -92,7 +99,7 @@ class BridgeController(
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "connect failed", e)
-            ConnectResult.Error(IAgentBridgeCallback.INTERNAL, e.message ?: e.javaClass.simpleName)
+            ConnectResult.Error(IAgentBridge.INTERNAL, e.message ?: e.javaClass.simpleName)
         }
         // The last client unbound while this connect ran, and the close it triggered may have
         // found nothing to close yet: close whatever this connect opened.
@@ -320,7 +327,7 @@ class BridgeController(
 
     private fun apiFailed(step: String, e: Exception): ConnectResult.Error {
         Log.w(TAG, "$step failed", e)
-        return ConnectResult.Error(IAgentBridgeCallback.API_FAILED, e.message ?: "$step failed")
+        return ConnectResult.Error(IAgentBridge.API_FAILED, e.message ?: "$step failed")
     }
 
     /**

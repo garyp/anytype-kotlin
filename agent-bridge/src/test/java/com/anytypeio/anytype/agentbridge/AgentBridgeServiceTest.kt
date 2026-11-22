@@ -4,9 +4,10 @@ import android.content.Context
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import io.anytype.agentbridge.IAgentBridge
-import io.anytype.agentbridge.IAgentBridgeCallback
+import io.anytype.agentbridge.AgentEndpoint
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.After
 import org.junit.Before
@@ -19,6 +20,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowBinder
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -58,25 +60,6 @@ class AgentBridgeServiceTest {
         override suspend fun activeSpaces(): List<SpaceRef> = emptyList()
     }
 
-    private class Recorder : IAgentBridgeCallback.Stub() {
-        val latch = CountDownLatch(1)
-        val events = mutableListOf<String>()
-
-        override fun onReady(baseUrl: String, apiKey: String) = record("ready $baseUrl $apiKey")
-        override fun onApprovalRequired() = record("approval")
-        override fun onError(code: Int, message: String) = record("error $code $message")
-
-        private fun record(e: String) {
-            synchronized(events) { events.add(e) }
-            latch.countDown()
-        }
-
-        fun await(): String {
-            assertTrue(latch.await(5, TimeUnit.SECONDS), "no callback")
-            return synchronized(events) { events.single() }
-        }
-    }
-
     private lateinit var gateway: FakeGateway
     private val approved = mutableMapOf<Int, Approval>()
     private val intent = Intent(AgentBridge.ACTION_BIND)
@@ -114,11 +97,34 @@ class AgentBridgeServiceTest {
     /** What the system does for a new bind with [i] after an onUnbind that returned true. */
     private fun rebind(i: Intent = intent) = service.get().onRebind(i)
 
+    /** Calls connect from a background thread, as a remote binder thread would, as [uid]. */
+    private fun call(bridge: IAgentBridge, uid: Int, timeoutMs: Long = 5_000): AgentEndpoint {
+        var result: AgentEndpoint? = null
+        var error: Throwable? = null
+        val t = Thread {
+            try {
+                ShadowBinder.setCallingUid(uid)
+                result = bridge.connect()
+            } catch (e: Throwable) {
+                error = e
+            }
+        }
+        t.start()
+        t.join(timeoutMs)
+        assertFalse(t.isAlive, "connect did not return within $timeoutMs ms")
+        error?.let { throw it }
+        return checkNotNull(result)
+    }
+
     private fun connect(bridge: IAgentBridge, uid: Int): String {
-        val rec = Recorder()
-        ShadowBinder.setCallingUid(uid)
-        bridge.connect(rec)
-        return rec.await()
+        val e = call(bridge, uid)
+        return if (e.code == IAgentBridge.OK) {
+            "ready ${e.baseUrl} ${e.apiKey}"
+        } else {
+            assertNull(e.baseUrl)
+            assertNull(e.apiKey)
+            "error ${e.code}"
+        }
     }
 
     private fun approve(uid: Int) {
@@ -141,16 +147,16 @@ class AgentBridgeServiceTest {
     }
 
     @Test
-    fun connectDeliversOnReady() {
+    fun connectReturnsEndpoint() {
         install()
         approve(10_123)
         assertEquals("ready http://127.0.0.1:40000 key1", connect(bind(), 10_123))
     }
 
     @Test
-    fun connectDeliversApprovalRequired() {
+    fun connectReturnsApprovalRequired() {
         install()
-        assertEquals("approval", connect(bind(), 10_124))
+        assertEquals("error ${IAgentBridge.APPROVAL_REQUIRED}", connect(bind(), 10_124))
     }
 
     @Test
@@ -159,45 +165,78 @@ class AgentBridgeServiceTest {
         approve(10_123)
         val b = bind()
         // Only 10_123 is approved; the uid must be the binder caller's, not the IO thread's.
-        assertEquals("approval", connect(b, 10_999))
+        assertEquals("error ${IAgentBridge.APPROVAL_REQUIRED}", connect(b, 10_999))
         assertTrue(connect(b, 10_123).startsWith("ready "))
     }
 
     @Test
-    fun notInstalledDeliversInternalError() {
-        assertEquals("error ${IAgentBridgeCallback.INTERNAL} bridge not installed", connect(bind(), 10_123))
+    fun notInstalledReturnsInternal() {
+        assertEquals("error ${IAgentBridge.INTERNAL}", connect(bind(), 10_123))
     }
 
     @Test
-    fun errorMessagesAreGeneric() {
+    fun errorMessagesStayGeneric() {
         AgentBridge.install(object : LocalApiGateway by gateway {
             override fun setListenAddr(addr: String): String? =
                 throw IllegalStateException("secret internal detail")
         }, FakeLauncher(), FakeSpaces())
         approve(10_123)
-        val r = connect(bind(), 10_123)
-        assertTrue(r.startsWith("error ${IAgentBridgeCallback.API_FAILED} "), r)
-        assertFalse(r.contains("secret"), r)
+        val e = call(bind(), 10_123)
+        assertEquals(IAgentBridge.API_FAILED, e.code)
+        // Nothing but the code reaches the caller.
+        assertNull(e.baseUrl)
+        assertNull(e.apiKey)
     }
 
     @Test
-    fun throwingCallbackIsSwallowed() {
-        install()
+    fun unapprovedCallerReturnsImmediatelyWithoutStarting() {
+        val release = CountDownLatch(1)
+        val started = AtomicBoolean(false)
+        AgentBridge.install(gateway, object : AccountLauncher {
+            override fun runningAccount(): AccountRef? = null
+            override suspend fun ensureStarted(): AccountRef {
+                started.set(true)
+                release.await()
+                return AccountRef("A", "Alice")
+            }
+            override fun generation() = 1L
+        }, FakeSpaces())
+        try {
+            val e = call(bind(), 10_555, timeoutMs = 1_000)
+            assertEquals(IAgentBridge.APPROVAL_REQUIRED, e.code)
+            assertFalse(started.get(), "an unapproved caller started the account")
+        } finally {
+            release.countDown()
+        }
+    }
+
+    @Test
+    fun unapprovedCallerDoesNotWaitForTheControllerMutex() {
+        val inside = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        AgentBridge.install(gateway, object : AccountLauncher {
+            override fun runningAccount() = AccountRef("A", "Alice")
+            override suspend fun ensureStarted(): AccountRef {
+                inside.countDown()
+                release.await()
+                return AccountRef("A", "Alice")
+            }
+            override fun generation() = 1L
+        }, FakeSpaces())
         approve(10_123)
         val b = bind()
-        val latch = CountDownLatch(1)
-        ShadowBinder.setCallingUid(10_123)
-        b.connect(object : IAgentBridgeCallback.Stub() {
-            override fun onReady(baseUrl: String, apiKey: String) {
-                latch.countDown()
-                throw android.os.RemoteException("client died")
-            }
-            override fun onApprovalRequired() = Unit
-            override fun onError(code: Int, message: String) = Unit
-        })
-        assertTrue(latch.await(5, TimeUnit.SECONDS))
-        // The service still answers afterwards.
-        assertTrue(connect(b, 10_123).startsWith("ready "))
+        // An approved connect holds the controller mutex, blocked in the account start.
+        val holder = Thread {
+            ShadowBinder.setCallingUid(10_123)
+            b.connect()
+        }.apply { start() }
+        try {
+            assertTrue(inside.await(5, TimeUnit.SECONDS))
+            assertEquals(IAgentBridge.APPROVAL_REQUIRED, call(b, 10_555, timeoutMs = 1_000).code)
+        } finally {
+            release.countDown()
+            holder.join(5_000)
+        }
     }
 
     @Test
