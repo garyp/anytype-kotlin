@@ -133,6 +133,13 @@ class MainActivity : ComponentActivity() {
                     addLog("unbound")
                 }) { Text("Unbind") }
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(enabled = selected != null, onClick = {
+                    val b = bridgeFor(selected!!)
+                    scope.launch { FlowRunner(b, ::addLog).probe() }
+                }) { Text("Probe") }
+                Button(onClick = { log.clear() }) { Text("Clear") }
+            }
             LogView(log, Modifier.weight(1f))
         }
     }

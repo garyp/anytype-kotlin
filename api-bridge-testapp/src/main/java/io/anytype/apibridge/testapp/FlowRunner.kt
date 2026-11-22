@@ -66,6 +66,50 @@ class FlowRunner(
         }
     }
 
+    /**
+     * Shows what the current key can reach, for checking an approval's limits by hand: the spaces
+     * `/v2/spaces` lists, a read of every space any earlier probe has listed (a space left out of a
+     * narrower approval should now be refused), and `/v1/spaces` (refused for a space-limited key).
+     */
+    suspend fun probe() {
+        try {
+            val endpoint = step("connect") { source.endpoint() }
+            val spaces = step("v2 spaces") { listSpaces(endpoint) }
+            log("visible spaces: ${spaces.size} ${spaces.values.joinToString(prefix = "[", postfix = "]")}")
+            seenSpaces.putAll(spaces)
+            for ((id, name) in seenSpaces) {
+                val code = withContext(Dispatchers.IO) { status(endpoint, "/v2/spaces/$id/objects?limit=1") }
+                log("read space $name: HTTP $code")
+            }
+            val v1 = withContext(Dispatchers.IO) { status(endpoint, "/v1/spaces") }
+            log("v1 spaces: HTTP $v1")
+        } catch (_: StepFailed) {
+            // already logged
+        }
+    }
+
+    private fun listSpaces(endpoint: Endpoint): Map<String, String> {
+        val body = get(endpoint, "/v2/spaces").use { resp ->
+            val text = resp.body.string()
+            if (!resp.isSuccessful) throw StepFailed("HTTP ${resp.code}: ${text.take(200)}")
+            text
+        }
+        val data = JSONObject(body).optJSONArray("data") ?: JSONArray()
+        return (0 until data.length()).associate {
+            val o = data.getJSONObject(it)
+            o.getString("id") to o.optString("name", o.getString("id"))
+        }
+    }
+
+    private fun status(endpoint: Endpoint, path: String): Int = get(endpoint, path).use { it.code }
+
+    private fun get(endpoint: Endpoint, path: String) = rest.newCall(
+        Request.Builder()
+            .url(endpoint.baseUrl.trimEnd('/') + path)
+            .header("Authorization", "Bearer ${endpoint.apiKey}")
+            .build()
+    ).execute()
+
     private suspend fun runTools(mcp: Client, spaceId: String) {
         step("tools/list") {
             val names = mcp.listTools().tools.map { it.name }
@@ -148,6 +192,9 @@ class FlowRunner(
 
     private companion object {
         val rest = OkHttpClient()
+
+        /** Every space a probe in this process has listed, id to name. */
+        val seenSpaces = linkedMapOf<String, String>()
 
         /**
          * Ktor client for the MCP SDK. The SDK opens a GET stream for server-initiated messages
