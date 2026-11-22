@@ -10,35 +10,20 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.RemoteException
 import androidx.annotation.RequiresApi
 import androidx.annotation.VisibleForTesting
 import androidx.core.app.ActivityOptionsCompat
 import androidx.core.content.ContextCompat
+import io.anytype.agentbridge.AgentEndpoint
 import io.anytype.agentbridge.IAgentBridge
-import io.anytype.agentbridge.IAgentBridgeCallback
-import kotlinx.coroutines.CancellableContinuation
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 data class Endpoint(val baseUrl: String, val apiKey: String)
-
-/**
- * Resumes [cont] at most once, whichever of a binder callback, a failure sweep or a direct
- * resume gets there first; a second resume of a continuation would throw.
- */
-internal class ResumeOnce<T>(val cont: CancellableContinuation<T>) {
-    private val done = AtomicBoolean()
-
-    fun resume(value: T) {
-        if (done.compareAndSet(false, true)) cont.resume(value)
-    }
-
-    fun fail(e: Throwable) {
-        if (done.compareAndSet(false, true)) cont.resumeWithException(e)
-    }
-}
 
 /** Test seam over [PackageManager.hasSigningCertificate]. */
 internal fun interface SigningCheck {
@@ -54,6 +39,9 @@ internal fun interface SigningCheck {
  * ignored), and the bridge binds only when [targetPackage] is signed with it. Otherwise
  * [connect] throws [BridgeException.Untrusted], and nothing reaches the impostor. The check
  * needs API 28+; below that a pinned bridge never binds.
+ *
+ * An instance has a single owner and is not thread-safe beyond [connect], which a mutex
+ * serializes.
  */
 class AnytypeBridge(
     context: Context,
@@ -62,151 +50,75 @@ class AnytypeBridge(
 ) {
 
     private val context: Context = context.applicationContext ?: context
-    private val lock = Any()
     private val expectedCert: ByteArray? = expectedCertSha256?.let(::parseSha256)
+    private val mutex = Mutex()
 
-    // Guarded by lock.
-    private var service: IAgentBridge? = null
-    private var bound = false
-    private var connection: ServiceConnection? = null
-    private val waiting = mutableListOf<ResumeOnce<IAgentBridge>>()
-    // Requests sent to the service whose callback has not arrived yet.
-    private val inFlight = mutableListOf<ResumeOnce<Endpoint>>()
+    // The current binding; a callback from an older one is ignored. Guarded by this.
+    private var connection: Conn? = null
+
+    /** A binding to the service; [service] completes on onServiceConnected or fails. */
+    private inner class Conn : ServiceConnection {
+        val service = CompletableDeferred<IAgentBridge>()
+
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val bridge = IAgentBridge.Stub.asInterface(binder)
+            if (bridge != null) {
+                service.complete(bridge)
+            } else {
+                release(this, BridgeException.Failed(IAgentBridge.INTERNAL, "no binder"))
+            }
+        }
+
+        // The service process died: rebind on the next connect rather than wait for a restart.
+        override fun onServiceDisconnected(name: ComponentName?) =
+            release(this, BridgeException.Failed(IAgentBridge.INTERNAL, "bridge disconnected"))
+
+        override fun onBindingDied(name: ComponentName?) =
+            release(this, BridgeException.Failed(IAgentBridge.INTERNAL, "binding died"))
+
+        override fun onNullBinding(name: ComponentName?) =
+            release(this, BridgeException.NotInstalled(targetPackage))
+    }
 
     /**
-     * Binds to the bridge service if needed, then requests the endpoint. Resumes exactly once per call.
+     * Binds to the bridge service if needed, then asks it for the endpoint; the binding is kept.
      * Throws [BridgeException].
      */
-    suspend fun connect(): Endpoint {
-        val bridge = awaitService()
-        return requestEndpoint(bridge)
+    suspend fun connect(): Endpoint = mutex.withLock {
+        val conn = synchronized(this) { connection } ?: bind()
+        val bridge = try {
+            conn.service.await()
+        } catch (e: Throwable) {
+            release(conn, null)
+            throw e
+        }
+        val reply: AgentEndpoint? = try {
+            withContext(Dispatchers.IO) { bridge.connect() }
+        } catch (e: RemoteException) {
+            release(conn, null)
+            throw BridgeException.Failed(IAgentBridge.INTERNAL, "bridge disconnected")
+        }
+        toEndpoint(reply)
     }
 
-    private suspend fun requestEndpoint(bridge: IAgentBridge): Endpoint =
-        suspendCancellableCoroutine { cont ->
-            val once = ResumeOnce(cont)
-            val registered = synchronized(lock) {
-                if (service === bridge) {
-                    inFlight.add(once)
-                    true
-                } else {
-                    false
-                }
-            }
-            if (!registered) {
-                once.fail(BridgeException.Failed(IAgentBridgeCallback.INTERNAL, "service disconnected"))
-                return@suspendCancellableCoroutine
-            }
-            cont.invokeOnCancellation { synchronized(lock) { inFlight.remove(once) } }
-            val callback = object : IAgentBridgeCallback.Stub() {
-                override fun onReady(baseUrl: String, apiKey: String) {
-                    synchronized(lock) { inFlight.remove(once) }
-                    once.resume(Endpoint(baseUrl, apiKey))
-                }
-
-                override fun onApprovalRequired() {
-                    synchronized(lock) { inFlight.remove(once) }
-                    once.fail(BridgeException.ApprovalRequired())
-                }
-
-                override fun onError(code: Int, message: String?) {
-                    synchronized(lock) { inFlight.remove(once) }
-                    once.fail(BridgeException.Failed(code, message.orEmpty()))
-                }
-            }
-            try {
-                bridge.connect(callback)
-            } catch (e: Exception) {
-                // Dead binder or similar: drop the cached service so the next call rebinds.
-                synchronized(lock) { inFlight.remove(once) }
-                releaseAndFail(
-                    BridgeException.Failed(IAgentBridgeCallback.INTERNAL, e.message.orEmpty())
-                )
-                once.fail(BridgeException.Failed(IAgentBridgeCallback.INTERNAL, e.message.orEmpty()))
-            }
-        }
-
-    private suspend fun awaitService(): IAgentBridge = suspendCancellableCoroutine { cont ->
-        val once = ResumeOnce(cont)
-        var startBind = false
-        var cached: IAgentBridge? = null
-        synchronized(lock) {
-            val current = service
-            if (current != null) {
-                cached = current
-            } else {
-                waiting.add(once)
-                if (!bound) {
-                    bound = true
-                    startBind = true
-                }
-            }
-        }
-        cached?.let { once.resume(it); return@suspendCancellableCoroutine }
-        cont.invokeOnCancellation { synchronized(lock) { waiting.remove(once) } }
-        if (startBind) bind()
-    }
-
-    private fun bind() {
+    private fun bind(): Conn {
         // Never bind to, and so never hand a request to, a package signed by someone else.
         val pin = expectedCert
         if (pin != null && !signingCheck.signedBy(context, targetPackage, pin)) {
-            synchronized(lock) { bound = false }
-            failWaiting(BridgeException.Untrusted(targetPackage))
-            return
+            throw BridgeException.Untrusted(targetPackage)
         }
-        val conn = object : ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-                val stub = IAgentBridge.Stub.asInterface(binder)
-                val toResume: List<ResumeOnce<IAgentBridge>>
-                synchronized(lock) {
-                    if (connection !== this) return // stale connection
-                    service = stub
-                    toResume = waiting.toList()
-                    waiting.clear()
-                }
-                toResume.forEach { it.resume(stub) }
-            }
-
-            override fun onServiceDisconnected(name: ComponentName?) {
-                // The service process died. Do not wait for an automatic reconnect that may never
-                // come (app disabled or uninstalled): fail everything pending and rebind next time.
-                if (!isCurrent(this)) return
-                releaseAndFail(
-                    BridgeException.Failed(IAgentBridgeCallback.INTERNAL, "service disconnected")
-                )
-            }
-
-            override fun onBindingDied(name: ComponentName?) {
-                if (!isCurrent(this)) return
-                releaseAndFail(
-                    BridgeException.Failed(IAgentBridgeCallback.INTERNAL, "binding died")
-                )
-            }
-
-            override fun onNullBinding(name: ComponentName?) {
-                if (!isCurrent(this)) return
-                releaseAndFail(BridgeException.NotInstalled(targetPackage))
-            }
-        }
-        synchronized(lock) { connection = conn }
-        val intent = Intent(BIND_ACTION).setPackage(targetPackage)
+        val conn = Conn()
+        synchronized(this) { connection = conn }
         val ok = try {
-            doBind(intent, conn)
+            doBind(Intent(BIND_ACTION).setPackage(targetPackage), conn)
         } catch (e: SecurityException) {
             false
         }
         if (!ok) {
-            try {
-                context.unbindService(conn)
-            } catch (_: Exception) {
-            }
-            synchronized(lock) {
-                connection = null
-                bound = false
-            }
-            failWaiting(BridgeException.NotInstalled(targetPackage))
+            release(conn, null)
+            throw BridgeException.NotInstalled(targetPackage)
         }
+        return conn
     }
 
     private fun doBind(intent: Intent, conn: ServiceConnection): Boolean {
@@ -230,54 +142,51 @@ class AnytypeBridge(
         }
     }
 
-    private fun isCurrent(conn: ServiceConnection): Boolean = synchronized(lock) { connection === conn }
-
-    /** Fails pending binds and in-flight requests. */
-    private fun failWaiting(e: BridgeException) {
-        val toFail: List<ResumeOnce<IAgentBridge>>
-        val requests: List<ResumeOnce<Endpoint>>
-        synchronized(lock) {
-            toFail = waiting.toList()
-            waiting.clear()
-            requests = inFlight.toList()
-            inFlight.clear()
-        }
-        toFail.forEach { it.fail(e) }
-        requests.forEach { it.fail(e) }
-    }
-
-    /** Drops the connection first (so late callbacks are ignored), then fails all pending calls. */
-    private fun releaseAndFail(e: BridgeException) {
-        clearService()
-        failWaiting(e)
-    }
-
-    /** Drops the cached service and releases the binding. */
-    private fun clearService() {
-        val conn: ServiceConnection?
-        synchronized(lock) {
-            service = null
-            conn = connection
+    /**
+     * Unbinds [conn] if it is still the current binding, and fails a [connect] that waits for it
+     * with [error]. The next [connect] binds afresh.
+     */
+    private fun release(conn: Conn?, error: BridgeException?) {
+        if (conn == null) return
+        synchronized(this) {
+            if (connection !== conn) return
             connection = null
-            bound = false
         }
-        if (conn != null) {
-            try {
-                context.unbindService(conn)
-            } catch (_: Exception) {
-            }
+        conn.service.completeExceptionally(error ?: BridgeException.NotInstalled(targetPackage))
+        try {
+            context.unbindService(conn)
+        } catch (_: Exception) {
         }
     }
 
-    /** Unbinds from the service and fails any pending [connect] calls. */
-    fun close() {
-        releaseAndFail(BridgeException.NotInstalled(targetPackage))
+    private fun toEndpoint(reply: AgentEndpoint?): Endpoint {
+        val code = reply?.code ?: IAgentBridge.INTERNAL
+        if (code == IAgentBridge.APPROVAL_REQUIRED) throw BridgeException.ApprovalRequired()
+        if (code != IAgentBridge.OK) throw BridgeException.Failed(code, messageFor(code))
+        val baseUrl = reply?.baseUrl
+        val apiKey = reply?.apiKey
+        if (baseUrl == null || apiKey == null) {
+            throw BridgeException.Failed(IAgentBridge.INTERNAL, "malformed reply")
+        }
+        return Endpoint(baseUrl, apiKey)
     }
+
+    private fun messageFor(code: Int): String = when (code) {
+        IAgentBridge.NOT_LOGGED_IN -> "not logged in"
+        IAgentBridge.START_FAILED -> "local API failed to start"
+        IAgentBridge.API_FAILED -> "local API request failed"
+        IAgentBridge.INTERNAL -> "internal error"
+        else -> "error $code"
+    }
+
+    /** Unbinds from the service and fails a [connect] that waits for the binding. */
+    fun close() = release(synchronized(this) { connection }, null)
 
     /** Call when the endpoint was rejected (e.g. key rotated): the next [connect] binds afresh. */
-    fun markStale() {
-        releaseAndFail(BridgeException.Failed(IAgentBridgeCallback.INTERNAL, "endpoint marked stale"))
-    }
+    fun markStale() = release(
+        synchronized(this) { connection },
+        BridgeException.Failed(IAgentBridge.INTERNAL, "endpoint marked stale")
+    )
 
     /** Intent to launch the approval screen of the Anytype app. */
     fun approvalIntent(): Intent = Intent(APPROVE_ACTION).setPackage(targetPackage)
@@ -308,21 +217,15 @@ class AnytypeBridge(
         const val APPROVE_ACTION = "io.anytype.agentbridge.APPROVE"
 
         /**
-         * Packages that expose the bridge bind action. Any app can expose it: prefer the
-         * overload that takes the expected certificate.
+         * Packages that expose the bridge bind action and, when [expectedCertSha256] is not null,
+         * are signed with that certificate (SHA-256, hex; colons and spaces are ignored). Any app
+         * can expose the action: pass the certificate.
          */
-        fun findInstalled(context: Context): List<String> =
-            context.packageManager
+        fun findInstalled(context: Context, expectedCertSha256: String? = null): List<String> {
+            val all = context.packageManager
                 .queryIntentServices(Intent(BIND_ACTION), PackageManager.GET_RESOLVED_FILTER)
                 .mapNotNull { it.serviceInfo?.packageName }
                 .distinct()
-
-        /**
-         * Packages that expose the bridge bind action and, when [expectedCertSha256] is not null,
-         * are signed with that certificate (SHA-256, hex; colons and spaces are ignored).
-         */
-        fun findInstalled(context: Context, expectedCertSha256: String?): List<String> {
-            val all = findInstalled(context)
             val pin = expectedCertSha256?.let(::parseSha256) ?: return all
             return all.filter { signingCheck.signedBy(context, it, pin) }
         }

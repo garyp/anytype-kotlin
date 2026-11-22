@@ -8,15 +8,15 @@ import android.content.ServiceConnection
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.os.DeadObjectException
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import io.anytype.agentbridge.AgentEndpoint
 import io.anytype.agentbridge.IAgentBridge
-import io.anytype.agentbridge.IAgentBridgeCallback
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.Executor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -84,9 +84,10 @@ class AnytypeBridgeTest {
     }
     private val pkg = AnytypeBridge.DEFAULT_PACKAGE
 
-    private fun install(block: (IAgentBridgeCallback) -> Unit) {
+    /** Registers a fake bridge service whose connect() runs [block]: return or throw. */
+    private fun install(block: () -> AgentEndpoint) {
         val stub = object : IAgentBridge.Stub() {
-            override fun connect(cb: IAgentBridgeCallback) = block(cb)
+            override fun connect(): AgentEndpoint = block()
         }
         val intent = Intent(AnytypeBridge.BIND_ACTION).setPackage(pkg)
         shadowOf(app).setComponentNameAndServiceForBindServiceForIntent(
@@ -94,29 +95,84 @@ class AnytypeBridgeTest {
         )
     }
 
+    private fun endpoint() = AgentEndpoint(IAgentBridge.OK, "http://127.0.0.1:1", "k")
+
+    private fun error(code: Int) = AgentEndpoint(code, null, null)
+
     @Test
-    fun connectReturnsEndpointOnReady() {
-        install { it.onReady("http://127.0.0.1:1", "k") }
+    fun connectReturnsEndpoint() {
+        install { endpoint() }
         val bridge = AnytypeBridge(ctx)
         assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
         bridge.close()
     }
 
     @Test
-    fun connectThrowsApprovalRequired() {
-        install { it.onApprovalRequired() }
+    fun approvalRequiredCodeMapsToApprovalRequired() {
+        install { error(IAgentBridge.APPROVAL_REQUIRED) }
         val bridge = AnytypeBridge(ctx)
         assertThrows(BridgeException.ApprovalRequired::class.java) { connectWithLooper { bridge.connect() } }
         bridge.close()
     }
 
     @Test
-    fun connectThrowsFailedWithCode() {
-        install { it.onError(3, "x") }
+    fun errorCodeMapsToFailed() {
+        install { error(IAgentBridge.API_FAILED) }
         val bridge = AnytypeBridge(ctx)
         val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper { bridge.connect() } }
         assertEquals(3, e.code)
-        assertEquals("x", e.msg)
+        bridge.close()
+    }
+
+    @Test
+    fun okReplyWithNullFieldIsMalformed() {
+        install { AgentEndpoint(IAgentBridge.OK, "http://127.0.0.1:1", null) }
+        val bridge = AnytypeBridge(ctx)
+        val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper { bridge.connect() } }
+        assertEquals(IAgentBridge.INTERNAL, e.code)
+        assertEquals("malformed reply", e.msg)
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun serviceDeathDuringConnectFailsThenRebinds() {
+        var dead = true
+        install { if (dead) throw DeadObjectException() else endpoint() }
+        val bridge = AnytypeBridge(ctx)
+        val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper { bridge.connect() } }
+        assertEquals(IAgentBridge.INTERNAL, e.code)
+        assertEquals(1, ctx.bindCount)
+        dead = false
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
+        assertEquals(2, ctx.bindCount)
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun connectDoesBinderCallOffMainThread() {
+        var offMain = false
+        install {
+            offMain = Looper.myLooper() != Looper.getMainLooper()
+            endpoint()
+        }
+        val bridge = AnytypeBridge(ctx)
+        connectWithLooper { bridge.connect() }
+        assertTrue(offMain)
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun serviceDisconnectedForcesRebind() {
+        install { endpoint() }
+        val bridge = AnytypeBridge(ctx)
+        connectWithLooper { bridge.connect() }
+        assertEquals(1, ctx.bindCount)
+        // A second connect reuses the binding.
+        connectWithLooper { bridge.connect() }
+        assertEquals(1, ctx.bindCount)
+        ctx.lastConnection!!.onServiceDisconnected(ComponentName(pkg, "$pkg.BridgeService"))
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
+        assertEquals(2, ctx.bindCount)
         bridge.close()
     }
 
@@ -154,7 +210,7 @@ class AnytypeBridgeTest {
 
     @Test(timeout = 30_000)
     fun bindFlagsIncludeAutoCreateAndCapabilities() {
-        install { it.onReady("u", "k") }
+        install { AgentEndpoint(IAgentBridge.OK, "u", "k") }
         val bridge = AnytypeBridge(ctx)
         connectWithLooper { bridge.connect() }
         assertTrue(ctx.lastFlags and Context.BIND_AUTO_CREATE != 0)
@@ -176,31 +232,12 @@ class AnytypeBridgeTest {
                 }
             }) { bridge.connect() }
         }
-        assertEquals(IAgentBridgeCallback.INTERNAL, e.code)
-    }
-
-    @Test(timeout = 30_000)
-    fun serviceDeathAfterRequestSentFailsConnect() {
-        var requested = false
-        install { requested = true } // never calls back
-        val bridge = AnytypeBridge(ctx)
-        var fired = false
-        val e = assertThrows(BridgeException.Failed::class.java) {
-            connectWithLooper(onTick = {
-                val c = ctx.lastConnection
-                if (requested && c != null && !fired) {
-                    fired = true
-                    c.onServiceDisconnected(ComponentName(pkg, "$pkg.BridgeService"))
-                }
-            }) { bridge.connect() }
-        }
-        assertEquals(IAgentBridgeCallback.INTERNAL, e.code)
-        bridge.close()
+        assertEquals(IAgentBridge.INTERNAL, e.code)
     }
 
     @Test(timeout = 30_000)
     fun connectAfterMarkStaleBindsAgain() {
-        install { it.onReady("u", "k") }
+        install { AgentEndpoint(IAgentBridge.OK, "u", "k") }
         val bridge = AnytypeBridge(ctx)
         connectWithLooper { bridge.connect() }
         val first = ctx.bindCount
@@ -227,7 +264,7 @@ class AnytypeBridgeTest {
 
     @Test
     fun pinnedCertMatchingBinds() {
-        install { it.onReady("http://127.0.0.1:1", "k") }
+        install { endpoint() }
         signedOnly(pkg)
         // Colon-separated upper case, as keytool prints it, is accepted too.
         val pin = goodCert.uppercase().chunked(2).joinToString(":")
@@ -239,7 +276,7 @@ class AnytypeBridgeTest {
     @Test
     fun pinnedCertMismatchNeverBinds() {
         var asked = false
-        install { asked = true; it.onReady("http://127.0.0.1:1", "k") }
+        install { asked = true; endpoint() }
         signedOnly() // the installed package is signed by someone else
         val bridge = AnytypeBridge(ctx, pkg, goodCert)
         val e = assertThrows(BridgeException.Untrusted::class.java) { connectWithLooper { bridge.connect() } }
@@ -253,7 +290,7 @@ class AnytypeBridgeTest {
 
     @Test
     fun platformCheckRefusesUnknownPackage() {
-        install { it.onReady("http://127.0.0.1:1", "k") }
+        install { endpoint() }
         // No package with that cert is installed: the real PackageManager check fails closed.
         val bridge = AnytypeBridge(ctx, "com.not.installed", goodCert)
         assertThrows(BridgeException.Untrusted::class.java) { connectWithLooper { bridge.connect() } }
@@ -282,19 +319,5 @@ class AnytypeBridgeTest {
         assertEquals(setOf("io.anytype.app", "com.impostor"), AnytypeBridge.findInstalled(app).toSet())
         assertEquals(listOf("io.anytype.app"), AnytypeBridge.findInstalled(app, goodCert))
         assertEquals(2, AnytypeBridge.findInstalled(app, null).size)
-    }
-
-    @Test
-    fun resumeOnceIgnoresSecondResume() {
-        // A binder callback and a failure sweep can race on one request; the loser must not throw.
-        val result = runBlocking {
-            suspendCancellableCoroutine<String> { cont ->
-                val once = ResumeOnce(cont)
-                once.resume("first")
-                once.fail(IllegalStateException("late failure"))
-                once.resume("late result")
-            }
-        }
-        assertEquals("first", result)
     }
 }
