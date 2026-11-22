@@ -22,10 +22,16 @@ Branch `apibridge` is upstream tag `v0.51.6` plus these commits:
    commit gives it its current name.
 4. `Bump tantivy-go to v1.0.7` (cherry-picked from upstream `develop`, `2e54309f6`): Go 1.26.11,
    which the `Build` workflow's `setup-go` resolves, refuses v1.0.6's prebuilt libraries.
+5. CI-only commits: a 240-minute job timeout, a `platform` input for manual runs, and NDK 28 on
+   the Linux runner (see below).
 
-Pushing a `v*.*.*` tag (for example `v0.51.6-apibridge.1`) runs the fork's `Build` workflow. It
-builds the AAR for all ABIs and publishes `io.anyproto:anytype-heart-android:<tag>` to the fork's
-GitHub Packages, `https://maven.pkg.github.com/garyp/anytype-heart`.
+To publish, run the fork's `Build` workflow manually (Actions tab, `Build`, "Run workflow" on
+`apibridge`) with `platform = android` and `alpha_version = <version>`, for example
+`v0.51.6-apibridge.1`. An `android` run builds only the AAR, on `ubuntu-24.04`, in about 10
+minutes, and publishes `io.anyproto:anytype-heart-android:<version>` to the fork's GitHub
+Packages, `https://maven.pkg.github.com/garyp/anytype-heart`. Pushing a `v*.*.*` tag also works,
+but it builds every platform on macOS and takes over two hours. A version can be published only
+once per package; publish a new `-apibridge.N` rather than reusing one.
 
 Setup of the fork (once):
 
@@ -61,8 +67,9 @@ force the download.
    `v0.51.6` if it is missing). Then rebase the fork's `apibridge` branch onto the new upstream
    tag (`git rebase --onto vX.Y.Z v0.51.6 apibridge`). Drop the fix commit if upstream now calls
    `api.SetMiddlewareParams(mw)` in `clientlibrary/service` (see "Dropping the fork").
-2. Tag `vX.Y.Z-apibridge.N` and push the tag (or create a GitHub release with that tag). Wait for
-   the `Build` workflow to publish the package.
+2. Push the branch and run the `Build` workflow with `platform = android` and
+   `alpha_version = vX.Y.Z-apibridge.N` (see above). Tag the published commit
+   `vX.Y.Z-apibridge.N` for `run-contract-tests.sh`.
 3. Set `middlewareVersion` in `gradle/libs.versions.toml` to `vX.Y.Z-apibridge.N`, and the tag
    that `run-contract-tests.sh` checks (`HEART_TAG`).
 4. Rerun `run-contract-tests.sh` against the new tag.
