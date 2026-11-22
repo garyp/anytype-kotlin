@@ -36,12 +36,13 @@ was more complicated than it needed to be, or in the wrong place:
 - **The interface:**
   - `interface IAgentBridge { const int VERSION = 2; AgentEndpoint connect(); }`. It is
     not `oneway`.
-  - `AgentEndpoint` is a parcelable defined in AIDL, carrying `baseUrl` and `apiKey`.
+  - `AgentEndpoint` is a parcelable defined in AIDL, carrying `code: Int`, `baseUrl: String?`
+    and `apiKey: String?`. `code == 0` means OK and carries `baseUrl` and `apiKey`.
   - `IAgentBridgeCallback` is deleted.
-- **Errors.** They are thrown as `ServiceSpecificException(code, genericMessage)`, with
-  these codes: `NOT_LOGGED_IN = 1`, `START_FAILED = 2`, `API_FAILED = 3`, `INTERNAL = 4`,
-  `APPROVAL_REQUIRED = 5`. The constants stay in a small AIDL-declared constants holder,
-  or on `IAgentBridge`.
+- **Errors.** They travel in the result as `AgentEndpoint.code`, with these codes: `NOT_LOGGED_IN = 1`, `START_FAILED = 2`, `API_FAILED = 3`, `INTERNAL = 4`,
+  `APPROVAL_REQUIRED = 5`, as constants on `IAgentBridge`. (Ruling made during execution:
+  `android.os.ServiceSpecificException` is hidden from the public SDK, so errors cannot be
+  thrown that way.)
 - **The service.**
   - It reads `Binder.getCallingUid()`, then runs the controller's connect and blocks the
     binder thread until it finishes, for example with `runBlocking(Dispatchers.IO)`.
@@ -52,8 +53,8 @@ was more complicated than it needed to be, or in the wrong place:
   - `connect()` binds if needed, suspending until `onServiceConnected`, and keeps the
     binding. Then, on `Dispatchers.IO`, it makes one call to `service.connect()`, which
     blocks.
-  - It maps `ServiceSpecificException` to `BridgeException.Failed(code)` or
-    `ApprovalRequired`. `DeadObjectException` and `RemoteException` mean the bridge is
+  - It maps a non-zero `code` to `BridgeException.Failed(code)`, or to `ApprovalRequired`
+    for code 5. `DeadObjectException` and `RemoteException` mean the bridge is
     gone: the client clears the binding and fails.
   - Kept as before: optional cert pinning (`expectedCertSha256`), `findInstalled`,
     `approvalIntent()`, `approvalOptions()`, `close()`, and the bind flags
