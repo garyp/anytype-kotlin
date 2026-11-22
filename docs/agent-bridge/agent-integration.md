@@ -80,8 +80,15 @@ interface IAgentBridge {
     const int INTERNAL = 4;
     const int APPROVAL_REQUIRED = 5;
     AgentEndpoint connect();   // blocks; AgentEndpoint { int code; String baseUrl; String apiKey }
+    int version();             // returns VERSION
 }
 ```
+
+`connect()` waits at most about 45 seconds; past that the service answers `INTERNAL`, though the
+connect goes on inside Anytype and a later call can pick up its result. Cancelling the caller's
+coroutine cannot interrupt a binder call in progress, so this bound is the longest a call takes.
+Concurrent calls from one app share a single connect. New methods are only ever appended, after
+`version()`.
 
 Errors travel in `AgentEndpoint.code`, never as exceptions over the binder. The client maps them:
 
@@ -95,8 +102,10 @@ Errors travel in `AgentEndpoint.code`, never as exceptions over the binder. The 
 | `APPROVAL_REQUIRED` (5) | the user has not approved this app (answered at once, before anything waits) | `BridgeException.ApprovalRequired` |
 
 Before the call, the client throws `BridgeException.NotInstalled` when it cannot bind (Anytype
-missing or too old) and `BridgeException.Untrusted` when the package is not signed with the pinned
-certificate. A `RemoteException` or binder death drops the binding, so the next `connect()` binds
+missing, or a build without the bridge) and `BridgeException.Untrusted` when the package is not signed with the pinned
+certificate. An Anytype whose bridge is too old or otherwise incompatible binds but sends no reply:
+that shows as `BridgeException.Failed(INTERNAL, "no reply: Anytype bridge too old or
+incompatible")`, not as `NotInstalled`. A `RemoteException` or binder death drops the binding, so the next `connect()` binds
 afresh.
 
 An `AnytypeBridge` instance has a single owner and is not thread-safe beyond `connect()`, which a
@@ -122,8 +131,9 @@ try {
 `approvalOptions()` enables share-identity (API 34+), which lets Anytype see which app is asking.
 Without it the consent screen refuses. The user sees your app name and signing certificate, picks
 all spaces or specific ones, and read-only or read-write. Other exceptions: `NotInstalled`
-(Anytype is missing or too old), `Untrusted` (the package is not signed with the pinned
-certificate) and `Failed(code, msg)`.
+(Anytype is missing or has no bridge), `Untrusted` (the package is not signed with the pinned
+certificate) and `Failed(code, msg)` (including an
+Anytype bridge too old for this client: `Failed(INTERNAL, "no reply: ...")`).
 
 Approvals are per Anytype account and pinned to your package name and signing certificate. The user
 can list and revoke approved agents on the Anytype access screen. Revoking cuts a live agent off

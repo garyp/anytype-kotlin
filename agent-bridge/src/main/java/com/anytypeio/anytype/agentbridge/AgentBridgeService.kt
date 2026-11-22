@@ -8,16 +8,22 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import io.anytype.agentbridge.AgentEndpoint
 import io.anytype.agentbridge.IAgentBridge
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The exported service agent apps bind with [AgentBridge.ACTION_BIND]. The manifest enables it
  * only on API 35+ (`@bool/agent_bridge_enabled`).
  *
- * [IAgentBridge.connect] blocks the binder thread until the endpoint is ready. Errors travel in
- * [AgentEndpoint.code] only; details stay in the log.
+ * [IAgentBridge.connect] blocks the binder thread until the endpoint is ready, but for at most
+ * [AgentBridge.connectTimeoutMs] (45 s): the connect runs in [AgentBridge.backgroundScope], and a
+ * caller still waiting at the deadline gets INTERNAL while the connect finishes under the
+ * controller mutex. Calls from one uid share the connect in flight, so a caller cannot pile up
+ * binder threads behind the mutex. Errors travel in [AgentEndpoint.code] only; details stay in
+ * the log.
  */
 @RequiresApi(35)
 class AgentBridgeService : Service() {
@@ -47,7 +53,11 @@ class AgentBridgeService : Service() {
         // Fast path, before anything that waits: a caller approved under no account must not
         // tie up a binder thread behind the mutex or an account start.
         if (!controller.isApprovedAnywhere(uid)) return failure(IAgentBridge.APPROVAL_REQUIRED)
-        return when (val r = runBlocking(Dispatchers.IO) { controller.connect(uid) }) {
+        val r = awaitConnect(controller, uid) ?: run {
+            Log.w(TAG, "connect from uid $uid timed out after ${AgentBridge.connectTimeoutMs} ms")
+            return failure(IAgentBridge.INTERNAL)
+        }
+        return when (r) {
             is BridgeController.ConnectResult.Ready -> AgentEndpoint(IAgentBridge.OK, r.baseUrl, r.apiKey)
             BridgeController.ConnectResult.ApprovalRequired -> failure(IAgentBridge.APPROVAL_REQUIRED)
             is BridgeController.ConnectResult.Error -> {
@@ -56,6 +66,20 @@ class AgentBridgeService : Service() {
                 failure(r.code)
             }
         }
+    }
+
+    /**
+     * Joins the connect in flight for [uid], or starts one, and waits for it on this binder thread
+     * for at most [AgentBridge.connectTimeoutMs]. Null on timeout.
+     */
+    private fun awaitConnect(controller: BridgeController, uid: Int): BridgeController.ConnectResult? {
+        val inFlight = AgentBridge.inFlightConnects
+        val deferred = inFlight.computeIfAbsent(uid) {
+            AgentBridge.backgroundScope.async(start = CoroutineStart.LAZY) { controller.connect(uid) }
+        }
+        deferred.invokeOnCompletion { inFlight.remove(uid, deferred) }
+        deferred.start()
+        return runBlocking { withTimeoutOrNull(AgentBridge.connectTimeoutMs) { deferred.await() } }
     }
 
     override fun onBind(intent: Intent?): IBinder {

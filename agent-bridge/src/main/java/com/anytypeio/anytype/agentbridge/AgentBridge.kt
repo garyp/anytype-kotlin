@@ -5,9 +5,11 @@ import android.os.Build
 import androidx.annotation.VisibleForTesting
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
@@ -55,6 +57,20 @@ object AgentBridge {
 
     /** Runs unbind closes and revoke retries; outlives every service and screen. */
     internal val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * How long a binder thread waits for a connect. The connect itself goes on in
+     * [backgroundScope] under the controller mutex; a caller that gives up gets INTERNAL.
+     */
+    @VisibleForTesting
+    @Volatile
+    internal var connectTimeoutMs: Long = CONNECT_TIMEOUT_MS
+
+    /**
+     * The connect in flight per calling uid. A second call from the same uid awaits the same
+     * result instead of queueing another connect, so one uid holds at most one connect at a time.
+     */
+    internal val inFlightConnects = ConcurrentHashMap<Int, Deferred<BridgeController.ConnectResult>>()
 
     /** Test seams: replace the [CallerVerifier]-backed checks. */
     @VisibleForTesting
@@ -126,10 +142,13 @@ object AgentBridge {
         callerCheckOverride = null
         approvedAnywhereOverride = null
         unbindDispatcher = Dispatchers.IO
+        connectTimeoutMs = CONNECT_TIMEOUT_MS
         activeBindings.set(0)
         // Revoke retries of an earlier test's controller would sweep this test's store.
         backgroundScope.coroutineContext.cancelChildren()
+        inFlightConnects.clear()
     }
 
     private const val PROBE_TIMEOUT_MS = 300
+    internal const val CONNECT_TIMEOUT_MS = 45_000L
 }

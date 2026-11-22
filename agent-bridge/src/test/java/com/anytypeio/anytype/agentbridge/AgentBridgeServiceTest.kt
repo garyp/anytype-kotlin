@@ -7,7 +7,9 @@ import io.anytype.agentbridge.IAgentBridge
 import io.anytype.agentbridge.AgentEndpoint
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.After
 import org.junit.Before
@@ -237,6 +239,63 @@ class AgentBridgeServiceTest {
             release.countDown()
             holder.join(5_000)
         }
+    }
+
+    @Test
+    fun hungConnectReturnsInternalWithinTheTimeout() {
+        val release = CountDownLatch(1)
+        AgentBridge.connectTimeoutMs = 200
+        AgentBridge.install(gateway, object : AccountLauncher {
+            override fun runningAccount() = AccountRef("A", "Alice")
+            override suspend fun ensureStarted(): AccountRef {
+                release.await()
+                return AccountRef("A", "Alice")
+            }
+            override fun generation() = 1L
+        }, FakeSpaces())
+        approve(10_123)
+        try {
+            assertEquals(IAgentBridge.INTERNAL, call(bind(), 10_123, timeoutMs = 2_000).code)
+        } finally {
+            release.countDown()
+        }
+    }
+
+    @Test
+    fun concurrentConnectsFromOneUidShareOneControllerConnect() {
+        val release = CountDownLatch(1)
+        val starts = AtomicInteger()
+        AgentBridge.install(gateway, object : AccountLauncher {
+            override fun runningAccount() = AccountRef("A", "Alice")
+            override suspend fun ensureStarted(): AccountRef {
+                starts.incrementAndGet()
+                release.await()
+                return AccountRef("A", "Alice")
+            }
+            override fun generation() = 1L
+        }, FakeSpaces())
+        approve(10_123)
+        val b = bind()
+        val results = ConcurrentLinkedQueue<AgentEndpoint>()
+        val threads = List(5) {
+            Thread {
+                ShadowBinder.setCallingUid(10_123)
+                results.add(b.connect())
+            }.apply { start() }
+        }
+        try {
+            waitUntil { starts.get() >= 1 }
+            Thread.sleep(200)
+        } finally {
+            release.countDown()
+            threads.forEach { it.join(5_000) }
+        }
+        assertEquals(1, starts.get(), "concurrent calls from one uid ran more than one connect")
+        assertEquals(5, results.size)
+        assertTrue(results.all { it.code == IAgentBridge.OK && it.apiKey == "key1" })
+        // Once it has finished, a later call runs a connect of its own.
+        assertEquals(IAgentBridge.OK, call(b, 10_123).code)
+        assertEquals(2, starts.get())
     }
 
     @Test

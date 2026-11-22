@@ -31,8 +31,10 @@ fun interface ApprovedAnywhere {
  * and hand out the caller's key. Blocking work (gateway, approvals store, [probe]) runs on
  * [dispatcher].
  *
- * Keys pending revocation for the running account are swept on every connect, approved or not
- * (before any listener opens), and on every unbind. When a revoke fails, a retry loop in
+ * Keys pending revocation for the running account are swept on every connect that reaches the
+ * controller (before any listener opens), and on every unbind. A caller approved under no account
+ * never reaches it: [AgentBridgeService] answers it from [isApprovedAnywhere] first, so such a
+ * call sweeps nothing; the next approved connect or unbind does. When a revoke fails, a retry loop in
  * [retryScope] sweeps again with backoff while that account runs.
  *
  * [idle] is true when no client is bound to the service. It is read under the mutex, so closing
@@ -108,9 +110,10 @@ class BridgeController(
     }
 
     private suspend fun connectLocked(uid: Int): ConnectResult {
-        // 0. A caller approved under no account learns nothing, and starts nothing.
+        // 0. A caller approved under no account learns nothing, and starts nothing. The service
+        // turns such callers away before they get here; this catches an approval revoked since.
         if (!withContext(dispatcher) { approvedAnywhere.approvedAnywhere(uid) }) {
-            // A revoked agent lands here: sweep its keys if the account runs, but start nothing.
+            // Sweep pending keys if the account runs, but start nothing.
             withContext(dispatcher) { launcher.runningAccount()?.let { sweepQuietly(it.id) } }
             return ConnectResult.ApprovalRequired
         }
