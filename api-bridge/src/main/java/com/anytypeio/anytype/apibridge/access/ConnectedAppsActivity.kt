@@ -7,8 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,14 +17,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -39,8 +42,7 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
@@ -53,13 +55,14 @@ import com.anytypeio.anytype.apibridge.KeyNames
 import com.anytypeio.anytype.apibridge.consent.ConsentState
 import com.anytypeio.anytype.core_ui.R
 import com.anytypeio.anytype.core_ui.extensions.contentWidthDp
+import com.anytypeio.anytype.core_ui.foundation.EmptyState
+import com.anytypeio.anytype.core_ui.foundation.Section
+import com.anytypeio.anytype.core_ui.foundation.noRippleThrottledClickable
 import com.anytypeio.anytype.core_ui.views.ButtonSize
 import com.anytypeio.anytype.core_ui.views.ButtonWarning
-import com.anytypeio.anytype.core_ui.views.Caption1Medium
 import com.anytypeio.anytype.core_ui.views.Caption1Regular
-import com.anytypeio.anytype.core_ui.views.PreviewTitle1Medium
+import com.anytypeio.anytype.core_ui.views.PreviewTitle1Regular
 import com.anytypeio.anytype.core_ui.views.Title1
-import com.anytypeio.anytype.core_ui.views.UxSmallTextRegular
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CancellationException
@@ -199,66 +202,87 @@ class ConnectedAppsActivity : ComponentActivity() {
         pkg
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun AccessContent(state: UiState, onRevoke: (Row) -> Unit, onBack: () -> Unit) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(colorResource(R.color.background_primary))
-                // Android 15+ draws apps edge to edge: keep the content clear of the system bars.
-                .windowInsetsPadding(WindowInsets.safeDrawing),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            Column(Modifier.widthIn(max = contentWidthDp()).fillMaxWidth()) {
-                Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) {
-                    Image(
-                        painterResource(R.drawable.ic_default_top_back),
-                        contentDescription = "Back",
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .padding(start = 4.dp)
-                            .clickable(role = Role.Button, onClick = onBack)
-                            .padding(10.dp)
-                            .size(24.dp)
-                    )
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = colorResource(id = R.color.background_primary),
+            contentWindowInsets = WindowInsets(0.dp),
+            topBar = {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .height(48.dp)
+                ) {
+                    Box(
+                        Modifier
+                            .width(56.dp)
+                            .fillMaxHeight()
+                            .noRippleThrottledClickable { onBack() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            painter = painterResource(R.drawable.ic_default_top_back),
+                            contentDescription = stringResource(R.string.content_desc_back_button)
+                        )
+                    }
                     Text(
                         "Connected apps",
-                        Modifier.padding(horizontal = 56.dp),
+                        Modifier.align(Alignment.Center).padding(horizontal = 56.dp),
                         style = Title1,
-                        color = colorResource(R.color.text_primary),
+                        color = colorResource(id = R.color.text_primary),
                         maxLines = 1
                     )
                 }
-                state.notice?.let {
+            }
+        ) { padding ->
+            Column(
+                Modifier.fillMaxSize().padding(padding).navigationBarsPadding(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Above the list, so it stays visible when revoking the last app empties it.
+                state.notice?.let { notice ->
                     Text(
-                        it,
-                        Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
-                        style = UxSmallTextRegular,
+                        notice,
+                        Modifier.widthIn(max = contentWidthDp()).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        style = Caption1Regular,
                         color = colorResource(R.color.palette_system_red)
                     )
                 }
                 when {
-                    state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = colorResource(R.color.glyph_active))
-                    }
-                    state.error != null -> Message(state.error, colorResource(R.color.palette_system_red))
-                    state.rows.isEmpty() -> Message(EMPTY, colorResource(R.color.text_secondary))
-                    else -> LazyColumn(Modifier.fillMaxWidth()) {
-                        item {
-                            Text(
-                                "Apps with access",
-                                Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
-                                style = Caption1Medium,
-                                color = colorResource(R.color.text_secondary)
-                            )
-                        }
+                    state.loading -> CircularProgressIndicator(
+                        Modifier.padding(top = 48.dp),
+                        color = colorResource(R.color.glyph_active)
+                    )
+                    state.error != null -> EmptyState(
+                        modifier = Modifier.padding(top = 48.dp).widthIn(max = contentWidthDp()),
+                        title = "Connected apps are unavailable",
+                        description = state.error,
+                        icon = R.drawable.ic_popup_alert_56
+                    )
+                    state.rows.isEmpty() -> EmptyState(
+                        modifier = Modifier.padding(top = 48.dp).widthIn(max = contentWidthDp()),
+                        title = "No connected apps",
+                        description = EMPTY,
+                        icon = R.drawable.ic_popup_lock_56
+                    )
+                    else -> LazyColumn(
+                        Modifier
+                            .widthIn(max = contentWidthDp())
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp)
+                    ) {
+                        item { Section(title = "Apps with access", textPaddingStart = 0.dp) }
                         items(state.rows, key = { it.approval.packageName }) { row ->
-                            ApprovalRow(row, enabled = row.approval.packageName !in state.busy, onRevoke)
+                            ApprovalCard(row, enabled = row.approval.packageName !in state.busy, onRevoke)
+                            Spacer(Modifier.height(8.dp))
                         }
                         item {
                             Text(
                                 FOOTER,
-                                Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
+                                Modifier.padding(top = 8.dp, bottom = 24.dp),
                                 style = Caption1Regular,
                                 color = colorResource(R.color.text_secondary)
                             )
@@ -269,22 +293,19 @@ class ConnectedAppsActivity : ComponentActivity() {
         }
     }
 
+    /** One app, drawn as a bordered settings item like the ones in space settings. */
     @Composable
-    private fun Message(text: String, color: androidx.compose.ui.graphics.Color) {
-        Text(
-            text,
-            Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 48.dp),
-            style = UxSmallTextRegular,
-            color = color,
-            textAlign = TextAlign.Center
-        )
-    }
-
-    @Composable
-    private fun ApprovalRow(row: Row, enabled: Boolean, onRevoke: (Row) -> Unit) {
+    private fun ApprovalCard(row: Row, enabled: Boolean, onRevoke: (Row) -> Unit) {
         val a = row.approval
         Row(
-            Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+            Modifier
+                .fillMaxWidth()
+                .border(
+                    shape = RoundedCornerShape(16.dp),
+                    width = 0.5.dp,
+                    color = colorResource(id = R.color.shape_primary)
+                )
+                .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             row.icon?.let {
@@ -292,7 +313,7 @@ class ConnectedAppsActivity : ComponentActivity() {
                 Spacer(Modifier.width(12.dp))
             }
             Column(Modifier.weight(1f)) {
-                Text(row.label, style = PreviewTitle1Medium, color = colorResource(R.color.text_primary))
+                Text(row.label, style = PreviewTitle1Regular, color = colorResource(R.color.text_primary))
                 Text(
                     "${accessText(a.access)} · ${grantText(a)} · ${dateText(a.approvedAt)}",
                     style = Caption1Regular,
@@ -316,7 +337,7 @@ class ConnectedAppsActivity : ComponentActivity() {
     }
 
     companion object {
-        internal const val EMPTY = "No apps have access to Anytype."
+        internal const val EMPTY = "When you allow an app to access Anytype, it appears here and you can revoke it at any time."
         internal const val FOOTER =
             "Connected apps can use Anytype's local API while they are connected. Revoking an app removes its access."
         internal const val SIGN_IN_FIRST = "Sign in to Anytype first"

@@ -103,17 +103,17 @@ class ConnectApprovalActivityTest {
         )
 
     /**
-     * Launches and waits for the dialog. Robolectric never gives a dialog window focus, so the
-     * test does what the system does when the dialog comes to the front.
+     * Launches and waits for the sheet. Robolectric never gives the sheet window focus, so the
+     * test does what the system does when the sheet comes to the front.
      */
     private fun launchShown(): ActivityScenario<ConnectApprovalActivity> {
         val scenario = launch()
         val deadline = System.currentTimeMillis() + 5_000
         var root: android.view.View? = null
         while (root == null) {
-            check(System.currentTimeMillis() < deadline) { "no dialog" }
+            check(System.currentTimeMillis() < deadline) { "no sheet" }
             shadowOf(Looper.getMainLooper()).idle()
-            scenario.onActivity { root = it.dialogRoot }
+            scenario.onActivity { root = it.sheetRoot }
             if (root == null) Thread.sleep(10)
         }
         root!!.rootView.dispatchWindowFocusChanged(true)
@@ -259,9 +259,9 @@ class ConnectApprovalActivityTest {
         }
     }
 
-    private fun dialogRoot(scenario: ActivityScenario<ConnectApprovalActivity>): android.view.ViewGroup {
+    private fun sheetRoot(scenario: ActivityScenario<ConnectApprovalActivity>): android.view.ViewGroup {
         var root: android.view.View? = null
-        scenario.onActivity { root = it.dialogRoot }
+        scenario.onActivity { root = it.sheetRoot }
         return assertNotNull(root) as android.view.ViewGroup
     }
 
@@ -292,16 +292,16 @@ class ConnectApprovalActivityTest {
     }
 
     @Test
-    fun obscuredTapOnDialogIsDropped() {
+    fun obscuredTapOnSheetIsDropped() {
         install()
         val scenario = launchShown()
         awaitAllowEnabled()
-        val root = dialogRoot(scenario)
+        val root = sheetRoot(scenario)
         tapAllow(root, android.view.MotionEvent.FLAG_WINDOW_IS_OBSCURED)
         assertNothingDecided(scenario)
         tapAllow(root, android.view.MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED)
         assertNothingDecided(scenario)
-        // Covered only once the finger is down: the dialog root drops the UP, so no click.
+        // Covered only once the finger is down: the sheet root drops the UP, so no click.
         tapAllow(root, 0, upFlags = android.view.MotionEvent.FLAG_WINDOW_IS_OBSCURED)
         assertNothingDecided(scenario)
         // The same tap, unobscured, still works.
@@ -315,8 +315,8 @@ class ConnectApprovalActivityTest {
         install()
         val scenario = launchShown()
         awaitAllowEnabled()
-        // Straight to the compose view, past the dialog root's filter: Allow's own guard must refuse.
-        val composeView = dialogRoot(scenario).getChildAt(0)
+        // Straight to the compose view, past the sheet root's filter: Allow's own guard must refuse.
+        val composeView = sheetRoot(scenario).getChildAt(0)
         tapAllow(composeView, android.view.MotionEvent.FLAG_WINDOW_IS_OBSCURED)
         assertNothingDecided(scenario)
         tapAllow(composeView, 0)
@@ -324,11 +324,11 @@ class ConnectApprovalActivityTest {
     }
 
     @Test
-    fun dialogRootFiltersObscuredTouches() {
+    fun sheetRootFiltersObscuredTouches() {
         install()
         val scenario = launchShown()
         awaitAllowEnabled()
-        val root = dialogRoot(scenario)
+        val root = sheetRoot(scenario)
         assertTrue(root.filterTouchesWhenObscured)
         assertTrue(root.isAccessibilityDataSensitive)
     }
@@ -341,7 +341,7 @@ class ConnectApprovalActivityTest {
         awaitText("Allow $PKG to access Anytype?")
         compose.onNodeWithText("Allow").performScrollTo().assertIsNotEnabled()
         // A real tap now does nothing.
-        tapAllow(dialogRoot(scenario), 0)
+        tapAllow(sheetRoot(scenario), 0)
         assertNothingDecided(scenario)
         compose.mainClock.advanceTimeBy(1_000)
         shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(1))

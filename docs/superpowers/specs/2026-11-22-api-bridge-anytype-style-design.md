@@ -11,42 +11,40 @@ Anytype's theme; the plan fell back to Material3 without weighing `core-ui`.
 ## Decisions (the user's)
 
 - The consent screen is an Anytype bottom sheet, not a system-style or centred dialog.
-- Access (Read and change / Read only) and Spaces (All spaces, then the space list) are two
-  separate, labelled groups, so the two choices do not read as one exclusive list.
+- Access (Read and change / Read only) and Spaces (All spaces, then the space list) are visibly
+  separate groups, so the two choices do not read as one exclusive list.
+- Use the same UI primitives as the rest of the app. That rules out a look-alike sheet drawn in a
+  Compose Dialog: the consent screen is a real Material3 `ModalBottomSheet`, configured the way the
+  app's other sheets are. Tests are rewritten to follow the production code where needed.
 
 ## Approaches
 
-1. **Depend on `:core-ui` and use its real components (chosen).** `ButtonPrimary`,
-   `ButtonSecondary`, `ButtonWarning`, Anytype's text styles and color resources, `contentWidthDp()`.
-   Costs a heavier module graph for `:api-bridge`; the APK is unchanged, since `:app` already holds
-   every module `core-ui` needs. `api-bridge-client`, the library other apps use, is not affected.
+1. **Depend on `:core-ui` and use the app's own primitives (chosen).** Costs a heavier module
+   graph for `:api-bridge`; the APK is unchanged, since `:app` already holds every module `core-ui`
+   needs. `api-bridge-client`, the library other apps use, is not affected.
 2. Copy Anytype's tokens into `:api-bridge`. No new dependency, but the copy drifts and the
-   buttons are look-alikes. Rejected.
+   components are look-alikes. Rejected.
 
 ## Design
 
-- **Consent sheet.** The same Compose `Dialog` window as before, so every protection stays as it
-  is: `FLAG_SECURE` and `SecureFlagPolicy.SecureOn`, hidden overlays, the obscured-touch filter on
-  the dialog layout and decor view, the `pointerInteropFilter` on Allow, and the arming delay. The
-  dialog fills the window (`usePlatformDefaultWidth = false`) and its content sits at the bottom:
-  a `background_secondary` sheet with 16 dp top corners, capped at `contentWidthDp()`, scrolling
-  when the window is short, clear of the navigation bar. Tapping outside still does nothing; Back
-  still means Don't allow. No drag handle: the sheet does not drag.
-- **Content**, top to bottom: the app icon (56 dp), the title (`HeadlineHeading`, centred), the
-  summary (`UxSmallTextRegular`, centred), package and certificate (`Caption1Regular`, secondary),
-  an error line if any, "Access" label and group (two rows, a tick on the selected one), "Spaces"
-  label and group (the All spaces switch, then a checkbox row per space when it is off), the
-  narrowed-access note, Allow (`ButtonPrimary`, Large) above Don't allow (`ButtonSecondary`, Large),
-  and "Manage connected apps" as a text link.
-- **Connected apps.** Anytype colors and text styles: a centred `Title1` header, a secondary label,
-  rows with the icon, name (`PreviewTitle1Medium`), access line and certificate (`Caption1Regular`,
-  secondary), and Revoke as `ButtonWarning` (Small). Empty, loading and error states keep their text.
-- **Theme.** Colors come from `core-ui` resources, so light and dark follow Anytype's own resources
-  instead of the wallpaper.
-- Semantics stay the same for tests and accessibility: radio rows, a switch, checkbox rows, the same
-  texts, `ICON_TAG` and `revokeTag`.
-
-## Left to the builder
-
-Exact spacing, the space rows without space icons (the consent state only has names), and the
-switch colors (`color_accent_80` track, as in `ShareSpaceScreen`).
+- **Consent sheet.** `ModalBottomSheet` as in the app's other sheets: `skipPartiallyExpanded`,
+  `sheetMaxWidth = contentWidthDp()`, 16 dp top corners, `background_secondary`,
+  `modal_screen_outside_background` scrim, `DragHandle()`. Swipe, Back and a tap on the scrim mean
+  Don't allow. Content: the app icon (56 dp), `AlertTitle`, `AlertDescription`, package and
+  certificate (`Caption1Regular`, secondary), then `Section("Access")` with two 52 dp `BodyRegular`
+  rows (a tick on the selected one) and `Section("Spaces")` with the All spaces switch
+  (`color_accent_80` track) and a checkbox row per space when it is off, rows separated by
+  `Divider()`; then `ButtonPrimary` Allow over `ButtonSecondary` Don't allow, and a
+  "Manage connected apps" link.
+- **Protections on the sheet's window.** The sheet is its own window (`ModalBottomSheetWindow`):
+  `ModalBottomSheetProperties(securePolicy = SecureOn)` keeps it out of screenshots, and the
+  obscured-touch filter goes on its root view (the parent of the sheet's compose view). The
+  activity window under it stays `FLAG_SECURE` with overlays hidden. Allow keeps its
+  `pointerInteropFilter` and the arming delay.
+- **Connected apps.** The space settings pattern: a `Scaffold` with the 48 dp top bar
+  (`ic_default_top_back`) and a centred `Title1`, `Section("Apps with access")`, one bordered card
+  per app (0.5 dp `shape_primary`, 16 dp radius) with the icon, name (`PreviewTitle1Regular`),
+  access line and certificate, and Revoke as `ButtonWarning`. Empty and error states use
+  `EmptyState`. The revoke-retrying notice sits above the list so it survives an emptied list.
+- **Theme.** Colors come from `core-ui` resources, so light and dark follow Anytype's own
+  resources instead of the wallpaper.

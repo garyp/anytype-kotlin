@@ -145,7 +145,8 @@ class ConnectedAppsActivityTest {
     fun emptyState() {
         ApiBridge.install(gateway, FakeLauncher(), NoSpaces)
         launch()
-        awaitText("No apps have access to Anytype.")
+        awaitText("No connected apps")
+        awaitText(ConnectedAppsActivity.EMPTY)
     }
 
     @Test

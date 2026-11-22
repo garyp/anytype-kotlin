@@ -8,30 +8,20 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.annotation.DrawableRes
 import androidx.annotation.RequiresApi
 import androidx.annotation.VisibleForTesting
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -39,9 +29,13 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -51,7 +45,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInteropFilter
@@ -66,9 +59,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
@@ -81,14 +71,17 @@ import com.anytypeio.anytype.apibridge.CallerVerifier
 import com.anytypeio.anytype.apibridge.access.ConnectedAppsActivity
 import com.anytypeio.anytype.core_ui.R
 import com.anytypeio.anytype.core_ui.extensions.contentWidthDp
+import com.anytypeio.anytype.core_ui.foundation.AlertDescription
+import com.anytypeio.anytype.core_ui.foundation.AlertTitle
+import com.anytypeio.anytype.core_ui.foundation.Divider
+import com.anytypeio.anytype.core_ui.foundation.Section
 import com.anytypeio.anytype.core_ui.views.BodyRegular
 import com.anytypeio.anytype.core_ui.views.ButtonPrimary
 import com.anytypeio.anytype.core_ui.views.ButtonSecondary
 import com.anytypeio.anytype.core_ui.views.ButtonSize
 import com.anytypeio.anytype.core_ui.views.Caption1Medium
 import com.anytypeio.anytype.core_ui.views.Caption1Regular
-import com.anytypeio.anytype.core_ui.views.HeadlineHeading
-import com.anytypeio.anytype.core_ui.views.UxSmallTextRegular
+import com.anytypeio.anytype.core_ui.widgets.dv.DragHandle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -133,9 +126,9 @@ class ConnectApprovalActivity : ComponentActivity() {
 
     private class AllowDown(val obscured: Boolean, val whileArmed: Boolean)
 
-    /** The dialog window's root view (the Compose DialogLayout). */
+    /** The root view of the sheet's window, which carries the obscured-touch filter. */
     @VisibleForTesting
-    internal var dialogRoot: View? = null
+    internal var sheetRoot: View? = null
         private set
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -156,14 +149,14 @@ class ConnectApprovalActivity : ComponentActivity() {
         setContentView(ComposeView(this).apply {
             protect()
             setContent {
-                ConsentDialog(
+                ConsentSheet(
                     state = state,
                     ui = ConsentUi(
                         icon = icon,
                         armed = armed,
                         armDelayMs = armDelayMs,
                         onArmed = { armed = it },
-                        onDialogRoot = { dialogRoot = it },
+                        onSheetRoot = { sheetRoot = it },
                         onAllowDown = ::onAllowDown,
                         onToggleSpace = { state = state.toggleSpace(it) },
                         onAllSpaces = { state = state.setAllSpaces(it) },
@@ -345,7 +338,7 @@ private class ConsentUi(
     val armed: Boolean,
     val armDelayMs: Long,
     val onArmed: (Boolean) -> Unit,
-    val onDialogRoot: (View) -> Unit,
+    val onSheetRoot: (View) -> Unit,
     val onAllowDown: (MotionEvent) -> Unit,
     val onToggleSpace: (String) -> Unit,
     val onAllSpaces: (Boolean) -> Unit,
@@ -356,34 +349,35 @@ private class ConsentUi(
 )
 
 /**
- * An Anytype bottom sheet, drawn inside a full-window Compose [Dialog]: the dialog window is what
- * carries the protections below, so the sheet look must not come from a different window
- * (such as Material's ModalBottomSheet). Tapping outside does nothing; Back means Don't allow.
+ * Anytype's modal bottom sheet. Swiping it away, Back and a tap on the scrim all mean
+ * Don't allow. The sheet is its own window (ModalBottomSheetWindow), so it gets the secure
+ * policy itself, and the obscured-touch filter goes on its root view; the activity window
+ * under it already hides overlays and is FLAG_SECURE.
  */
 @RequiresApi(35)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConsentDialog(state: ConsentState, ui: ConsentUi) {
-    Dialog(
+private fun ConsentSheet(state: ConsentState, ui: ConsentUi) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
         onDismissRequest = ui.onDeny,
-        properties = DialogProperties(
-            dismissOnClickOutside = false,
-            securePolicy = SecureFlagPolicy.SecureOn,
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
+        sheetState = sheetState,
+        sheetMaxWidth = contentWidthDp(),
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        containerColor = colorResource(id = R.color.background_secondary),
+        scrimColor = colorResource(id = R.color.modal_screen_outside_background),
+        dragHandle = { DragHandle() },
+        properties = ModalBottomSheetProperties(securePolicy = SecureFlagPolicy.SecureOn)
     ) {
-        // The dialog is its own window. AndroidComposeView (LocalView) never consults
-        // filterTouchesWhenObscured, so the filter goes on its parent, the DialogLayout, whose
-        // ViewGroup.dispatchTouchEvent drops obscured events, and on the window's decor view.
+        // AndroidComposeView (LocalView) never consults filterTouchesWhenObscured, so the filter
+        // goes on its parent, the sheet window's root ViewGroup, whose dispatchTouchEvent drops
+        // obscured events.
         val view = LocalView.current
         DisposableEffect(view) {
-            val dialogLayout = view.parent as? View
-            val window = (dialogLayout as? DialogWindowProvider)?.window
+            val root = view.parent as? View ?: view
             view.protect()
-            dialogLayout?.protect()
-            window?.decorView?.protect()
-            window?.setHideOverlayWindows(true)
-            ui.onDialogRoot(dialogLayout ?: view)
+            root.protect()
+            ui.onSheetRoot(root)
             onDispose { }
         }
         val shown = state.appLabel.isNotEmpty()
@@ -395,23 +389,12 @@ private fun ConsentDialog(state: ConsentState, ui: ConsentUi) {
                 ui.onArmed(true)
             }
         }
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-            Column(
-                Modifier
-                    .widthIn(max = contentWidthDp())
-                    .fillMaxWidth()
-                    .clip(SheetShape)
-                    .background(colorResource(R.color.background_secondary))
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-            ) {
-                if (!shown) {
-                    Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = colorResource(R.color.glyph_active))
-                    }
-                } else {
-                    ConsentContent(state, ui)
-                }
+        if (!shown) {
+            Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = colorResource(R.color.glyph_active))
             }
+        } else {
+            ConsentContent(state, ui)
         }
     }
 }
@@ -422,11 +405,8 @@ private fun ConsentDialog(state: ConsentState, ui: ConsentUi) {
 private fun ConsentContent(state: ConsentState, ui: ConsentUi) {
     val enabled = !state.loading
     // Scrolls when the window is short (a phone in landscape is about 411dp tall).
-    Column(
-        Modifier
-            .verticalScroll(rememberScrollState())
-            .padding(top = 24.dp, bottom = 16.dp)
-    ) {
+    Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding()) {
+        Spacer(Modifier.height(18.dp))
         ui.icon?.let {
             Image(
                 bitmap = it,
@@ -438,66 +418,79 @@ private fun ConsentContent(state: ConsentState, ui: ConsentUi) {
             )
             Spacer(Modifier.height(16.dp))
         }
-        CenteredText(state.title(), HeadlineHeading, colorResource(R.color.text_primary))
+        AlertTitle(state.title())
         Spacer(Modifier.height(8.dp))
-        CenteredText(state.body(), UxSmallTextRegular, colorResource(R.color.text_primary))
-        Spacer(Modifier.height(6.dp))
-        CenteredText("${state.packageName} · ${state.certShort}", Caption1Regular, colorResource(R.color.text_secondary))
+        AlertDescription(state.body())
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "${state.packageName} · ${state.certShort}",
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            style = Caption1Regular,
+            color = colorResource(R.color.text_secondary),
+            textAlign = TextAlign.Center
+        )
         state.error?.let {
             Spacer(Modifier.height(8.dp))
-            CenteredText(it, UxSmallTextRegular, colorResource(R.color.palette_system_red))
+            Text(
+                it,
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                style = Caption1Regular,
+                color = colorResource(R.color.palette_system_red),
+                textAlign = TextAlign.Center
+            )
         }
 
-        Spacer(Modifier.height(20.dp))
-        SectionLabel("Access")
-        Group(Modifier.selectableGroup()) {
+        Section(title = "Access", textPaddingStart = 20.dp)
+        Column(Modifier.selectableGroup()) {
             AccessRow("Read and change", state.access == Access.READ_WRITE, enabled) { ui.onAccess(Access.READ_WRITE) }
-            RowDivider()
+            Divider()
             AccessRow("Read only", state.access == Access.READ_ONLY, enabled) { ui.onAccess(Access.READ_ONLY) }
         }
+        Divider()
 
-        Spacer(Modifier.height(16.dp))
-        SectionLabel("Spaces")
-        Group {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .toggleable(state.allSpaces, enabled, Role.Switch) { ui.onAllSpaces(it) }
-                    .heightIn(min = RowHeight)
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("All spaces", Modifier.weight(1f), style = BodyRegular, color = colorResource(R.color.text_primary))
-                Switch(
-                    checked = state.allSpaces,
-                    onCheckedChange = null,
-                    enabled = enabled,
-                    colors = SwitchDefaults.colors(checkedTrackColor = colorResource(R.color.color_accent_80))
-                )
-            }
-            if (!state.allSpaces) {
-                state.spaces.forEach { space ->
-                    RowDivider()
-                    val checked = space.id in state.selected
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .toggleable(checked, enabled, Role.Checkbox) { ui.onToggleSpace(space.id) }
-                            .heightIn(min = RowHeight)
-                            .padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(space.name, Modifier.weight(1f), style = BodyRegular, color = colorResource(R.color.text_primary))
-                        RowIcon(if (checked) R.drawable.ic_checkbox_checked else R.drawable.ic_checkbox_default)
-                    }
+        Section(title = "Spaces", textPaddingStart = 20.dp)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .toggleable(state.allSpaces, enabled, Role.Switch) { ui.onAllSpaces(it) }
+                .height(52.dp)
+                .padding(horizontal = 20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("All spaces", Modifier.weight(1f), style = BodyRegular, color = colorResource(R.color.text_primary))
+            Switch(
+                checked = state.allSpaces,
+                onCheckedChange = null,
+                enabled = enabled,
+                colors = SwitchDefaults.colors(checkedTrackColor = colorResource(R.color.color_accent_80))
+            )
+        }
+        if (!state.allSpaces) {
+            state.spaces.forEach { space ->
+                Divider()
+                val checked = space.id in state.selected
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .toggleable(checked, enabled, Role.Checkbox) { ui.onToggleSpace(space.id) }
+                        .height(52.dp)
+                        .padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(space.name, Modifier.weight(1f), style = BodyRegular, color = colorResource(R.color.text_primary))
+                    Image(
+                        painterResource(if (checked) R.drawable.ic_checkbox_checked else R.drawable.ic_checkbox_default),
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
             }
         }
+        Divider()
         if (!state.allSpaces) {
-            Spacer(Modifier.height(8.dp))
             Text(
                 ConsentState.NARROWED_NOTE,
-                Modifier.padding(horizontal = 20.dp),
+                Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
                 style = Caption1Regular,
                 color = colorResource(R.color.text_secondary)
             )
@@ -537,63 +530,10 @@ private fun ConsentContent(state: ConsentState, ui: ConsentUi) {
                 .heightIn(min = 44.dp)
                 .padding(horizontal = 16.dp, vertical = 13.dp),
             style = Caption1Medium,
-            color = colorResource(R.color.text_primary)
+            color = colorResource(R.color.text_secondary)
         )
+        Spacer(Modifier.height(8.dp))
     }
-}
-
-private val SheetShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
-private val GroupShape = RoundedCornerShape(12.dp)
-private val RowHeight = 52.dp
-
-@Composable
-private fun CenteredText(text: String, style: androidx.compose.ui.text.TextStyle, color: androidx.compose.ui.graphics.Color) {
-    Text(
-        text,
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-        style = style,
-        color = color,
-        textAlign = TextAlign.Center
-    )
-}
-
-@Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text,
-        Modifier.padding(start = 20.dp, end = 20.dp, bottom = 6.dp),
-        style = Caption1Medium,
-        color = colorResource(R.color.text_secondary)
-    )
-}
-
-/** A bordered group of rows, as in Anytype's settings lists. */
-@Composable
-private fun Group(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier
-            .padding(horizontal = 16.dp)
-            .fillMaxWidth()
-            .clip(GroupShape)
-            .border(BorderStroke(1.dp, colorResource(R.color.shape_primary)), GroupShape),
-        content = content
-    )
-}
-
-@Composable
-private fun RowDivider() {
-    Box(
-        Modifier
-            .padding(start = 16.dp)
-            .fillMaxWidth()
-            .height(1.dp)
-            .background(colorResource(R.color.shape_secondary))
-    )
-}
-
-@Composable
-private fun RowIcon(@DrawableRes id: Int) {
-    Image(painterResource(id), contentDescription = null, modifier = Modifier.size(24.dp))
 }
 
 @Composable
@@ -602,11 +542,13 @@ private fun AccessRow(label: String, selected: Boolean, enabled: Boolean, onClic
         Modifier
             .fillMaxWidth()
             .selectable(selected, enabled, Role.RadioButton, onClick = onClick)
-            .heightIn(min = RowHeight)
-            .padding(horizontal = 16.dp),
+            .height(52.dp)
+            .padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(label, Modifier.weight(1f), style = BodyRegular, color = colorResource(R.color.text_primary))
-        if (selected) RowIcon(R.drawable.ic_option_checked)
+        if (selected) {
+            Image(painterResource(R.drawable.ic_option_checked), contentDescription = null, modifier = Modifier.size(24.dp))
+        }
     }
 }
