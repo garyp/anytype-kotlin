@@ -185,8 +185,10 @@ The test app can pin the Anytype build's signing certificate (optional):
 builds signed with that certificate.
 
 Log in to a (local-only) account in Anytype first. The instrumented test drives the approval screen
-and a read/write flow through the bridge. It has been compiled but not run yet (no emulator in the
-build environment).
+and a read/write flow through the bridge. The instrumented test has been compiled but not run. The
+same flow was run by hand from the test app's buttons on a run.cloud x86_64 Android 16 emulator with
+heart `v0.51.6-apibridge.2` (2026-11-22): approve, connect, `/v2/spaces`, MCP initialize, tools/list,
+create, find and read a page all passed ("ALL OK").
 
 ## Accepted loopback exposure
 
