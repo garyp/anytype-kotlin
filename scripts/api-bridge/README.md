@@ -160,11 +160,14 @@ $G :app:assembleDebug :api-bridge-testapp:assembleDebug
 HEART_DIR=../anytype-heart scripts/api-bridge/run-contract-tests.sh
 ```
 
-On an arm64 emulator or a phone (Android 15+). x86_64 emulators cannot run heart: its SQLite
-(`modernc.org/libc`, `libc_linux_amd64.go`) calls the legacy `lstat` syscall, which Android's
-x86_64 seccomp filter blocks. A release build is killed with SIGSYS when it opens its database; a
-debug build ignores the signal and fails with "unable to open database file". The official 0.50.4
-release fails the same way, so this is not caused by the bridge. arm64 has no `lstat` syscall.
+On an arm64 emulator or a phone (Android 15+). x86_64 emulators cannot run heart: its pure-Go
+SQLite (`modernc.org/libc`, generated musl in `ccgo_linux_amd64.go`) uses the legacy x86_64
+syscalls `lstat`, `access`, `unlink`, `mkdir`, `rmdir` and `rename`, which Android's app seccomp
+filter blocks on x86_64 (since Android 8). The official 0.50.4 release is killed with SIGSYS when it
+opens its database. The app's SIGSYS-ignoring handler hides the signal in debug builds, which then
+fail with "unable to open database file". arm64 has only the `*at` forms of these calls, so it is
+not affected. Upstream: https://gitlab.com/cznic/libc/-/issues/41 (closed without a fix; still
+present in libc v1.82.12).
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk        # io.anytype.app.dev
