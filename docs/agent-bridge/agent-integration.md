@@ -58,9 +58,49 @@ returns without a pin: it lists every app that claims the action. Without a pin,
 `AnytypeBridge(context, target)` (default target `io.anytype.app`) binds to whatever is
 installed under that name.
 
-`connect()` is a suspend function. It binds to the Anytype bridge service (starting the Anytype
-process if needed) and returns an `Endpoint(baseUrl, apiKey)` such as `http://127.0.0.1:<port>`
-plus a bearer key.
+### What `connect()` does
+
+`connect()` is a suspend function. It binds to the Anytype bridge service if it is not bound yet
+(Anytype's process starts if needed) and keeps the binding. Then it makes one synchronous AIDL
+call, `IAgentBridge.connect()`, on `Dispatchers.IO`. The service answers when the local API is
+ready, so the call can take a few seconds when Anytype has to start heart's listener. The result
+is an `Endpoint(baseUrl, apiKey)`: a loopback URL such as `http://127.0.0.1:<port>` and a bearer
+key for that app.
+
+The AIDL interface (version 2) is small, and an agent that does not want the client library can
+use it directly:
+
+```aidl
+interface IAgentBridge {
+    const int VERSION = 2;
+    const int OK = 0;
+    const int NOT_LOGGED_IN = 1;
+    const int START_FAILED = 2;
+    const int API_FAILED = 3;
+    const int INTERNAL = 4;
+    const int APPROVAL_REQUIRED = 5;
+    AgentEndpoint connect();   // blocks; AgentEndpoint { int code; String baseUrl; String apiKey }
+}
+```
+
+Errors travel in `AgentEndpoint.code`, never as exceptions over the binder. The client maps them:
+
+| `code` | Meaning | `AnytypeBridge.connect()` throws |
+|---|---|---|
+| `OK` (0) | `baseUrl` and `apiKey` are set | returns the `Endpoint` |
+| `NOT_LOGGED_IN` (1) | no account is open in Anytype | `BridgeException.Failed(1, "not logged in")` |
+| `START_FAILED` (2) | heart's local API did not start | `BridgeException.Failed(2, ...)` |
+| `API_FAILED` (3) | a middleware request (for example minting the key) failed | `BridgeException.Failed(3, ...)` |
+| `INTERNAL` (4) | anything else; also a dead binder, a failed call or a malformed reply | `BridgeException.Failed(4, ...)` |
+| `APPROVAL_REQUIRED` (5) | the user has not approved this app (answered at once, before anything waits) | `BridgeException.ApprovalRequired` |
+
+Before the call, the client throws `BridgeException.NotInstalled` when it cannot bind (Anytype
+missing or too old) and `BridgeException.Untrusted` when the package is not signed with the pinned
+certificate. A `RemoteException` or binder death drops the binding, so the next `connect()` binds
+afresh.
+
+An `AnytypeBridge` instance has a single owner and is not thread-safe beyond `connect()`, which a
+mutex serializes.
 
 ### The approval loop
 
@@ -89,27 +129,99 @@ Approvals are per Anytype account and pinned to your package name and signing ce
 can list and revoke approved agents on the Anytype access screen. Revoking cuts a live agent off
 at once when the account is running (its next request gets 401).
 
-## 3. Call the API
+## 3. Call the API with standard HTTP and MCP libraries
 
-Prefer MCP on the small tier, which heart designed for small models:
+The bridge only hands out the endpoint. Talk to it with any HTTP client and any MCP client: heart
+serves REST on `/v1` and `/v2` and MCP (Streamable HTTP) on `/mcp/small`, `/mcp/large` and
+`/mcp/full`. The test app (`agent-bridge-testapp`, `FlowRunner.kt`) does exactly this, and
+`scripts/agent-bridge/run-contract-tests.sh` runs it against a real heart.
+
+Two rules hold for every client:
+
+- Send `Authorization: Bearer <apiKey>` on every request.
+- Never send an `Origin` header: heart answers 403 to a foreign origin. OkHttp, Ktor and Retrofit
+  send none by default. (The JDK `HttpURLConnection` silently drops a caller-set `Origin`.)
+
+### REST with OkHttp (or Retrofit)
 
 ```kotlin
-val mcp = McpClient(endpoint, tier = "small")   // /mcp/small
-withContext(Dispatchers.IO) {
-    mcp.initialize()
-    val tools = mcp.listTools()
-    val result = mcp.callTool("spaces", JSONObject())
-}
+val http = OkHttpClient.Builder()
+    .addInterceptor { chain ->
+        chain.proceed(
+            chain.request().newBuilder()
+                .header("Authorization", "Bearer ${endpoint.apiKey}")
+                .build()
+        )
+    }
+    .build()
+
+val spaces = http.newCall(
+    Request.Builder().url(endpoint.baseUrl.trimEnd('/') + "/v2/spaces").build()
+).execute().use { it.body.string() }   // {"data":[{"id": ...}, ...]}
 ```
 
-Protocol notes (`McpClient` already does these): one JSON-RPC message per POST, a session header
-(`Mcp-Session-Id`) after `initialize`, re-initialize when a request answers 404 (session gone), and
-never send an `Origin` header (heart rejects foreign origins with 403). `find` returns numbered
-handles that are valid only within the same MCP session, so keep one `McpClient` per task.
+For Retrofit, pass the same `OkHttpClient` and `baseUrl = endpoint.baseUrl + "/"`. Build a new
+client when the endpoint changes (see section 4).
 
-REST is available through `RestClient(endpoint)` (`get`, `post`, `patch`) on `/v2/...`.
+### MCP with the Kotlin MCP SDK
 
-Access levels:
+`io.modelcontextprotocol:kotlin-sdk-client` (0.16.0) with its `StreamableHttpClientTransport`
+works against heart unchanged, over Ktor with the OkHttp engine (`io.ktor:ktor-client-okhttp`):
+
+```kotlin
+val http = HttpClient(OkHttp) { install(SSE) }
+val transport = StreamableHttpClientTransport(
+    client = http,
+    url = endpoint.baseUrl.trimEnd('/') + "/mcp/small",
+    requestBuilder = { header(HttpHeaders.Authorization, "Bearer ${endpoint.apiKey}") },
+)
+val mcp = Client(Implementation(name = "my-agent", version = "1"))
+mcp.connect(transport)                  // initialize + notifications/initialized
+val tools = mcp.listTools().tools
+val found = mcp.callTool("find", mapOf("space" to spaceId, "query" to "groceries"))
+```
+
+The SDK does what heart requires: it stores the `Mcp-Session-Id` from the initialize response and
+sends it, with `mcp-protocol-version`, on every later request; it accepts plain JSON responses and
+the 202 answer to `notifications/initialized`; it negotiates protocol `2025-11-25`, which heart
+accepts. `requestBuilder` puts the bearer key on every request of the transport (POST, the GET
+stream and DELETE).
+
+Findings from running the SDK against heart:
+
+- **Install Ktor's `SSE` plugin.** After initialize the SDK opens a GET stream for
+  server-initiated messages through `sseSession`. Heart has none and answers 405; with the plugin
+  installed the SDK treats 405 as "stream disabled" and moves on. Without it the GET fails locally
+  and the SDK keeps retrying it in the background with backoff, then reports an error. Calls still
+  work, but it is noisy.
+- **Kotlin version.** The 0.16.0 POM asks for `kotlin-stdlib` 2.4.21. A Kotlin 2.2 compiler cannot
+  read 2.4 metadata, so use Kotlin 2.3+, or pin the stdlib:
+  ```groovy
+  constraints {
+      implementation('org.jetbrains.kotlin:kotlin-stdlib') { version { strictly '2.3.21' } }
+  }
+  ```
+  This is safe: the SDK jars are built for Kotlin 2.2 and Ktor 3.5.2 / kotlinx-serialization 1.11
+  for 2.3. The SDK also brings kotlinx-coroutines 1.11.0 and kotlinx-serialization 1.11.0.
+- **JSON-RPC ids are strings** in the SDK (UUID-like). Heart echoes them as sent. A hand-written
+  fake server for tests must echo the id unchanged, or the SDK waits out its 60 s timeout.
+- **`find` handles are per MCP session.** `find` returns numbered handles in
+  `structuredContent.handles[{n,id,name,type}]`; `read` takes `object = "<n>"` (the number as a
+  string) and must go through the same connected `Client`. Keep one `Client` per task.
+- **`find` is eventually consistent** (full-text index): a page created a moment ago may not be
+  found yet, so poll.
+- **Tool failures are results, not errors.** A failing tool returns a normal result with
+  `isError = true` and the reason in its `TextContent`; check `isError` on every `callTool`.
+  JSON-RPC errors are reserved for protocol problems.
+- Results: `create` returns `structuredContent {id, type, etag}`; `read` returns the markdown as
+  `TextContent`. Small-tier argument names include `create{space,type,name,markdown,properties}`,
+  `find{space,query,type,filter,limit}` and `read{object,space,mode}`; `tools/list` has the rest.
+- Without an SLF4J binding the SDK (kotlin-logging) prints the SLF4J "no providers" warning once.
+  It is harmless.
+
+Prefer the small tier (`/mcp/small`) for small models; heart designed it for them.
+
+### Access levels
 
 - A key narrowed to specific spaces works only with `/v2` and MCP, not `/v1`, and cannot create
   spaces. Other spaces answer 403 `space_not_granted`.
@@ -132,11 +244,13 @@ an example call and a GBNF grammar per tool, plus a `filterGrammar`. Bundle it w
 use the grammars for constrained decoding (llama.cpp style) so a weak model emits valid tool
 arguments.
 
-Regenerate it whenever heart changes:
+Regenerate it whenever heart changes, from a checkout of the heart fork
+([garyp/anytype-heart](https://github.com/garyp/anytype-heart), branch `agentbridge`, see
+`scripts/agent-bridge/README.md`) at the version the app uses:
 
 ```bash
-scripts/agent-bridge/heart-harness/build.sh        # builds build/agent-bridge/bin/anytype if missing
-build/agent-bridge/bin/anytype tools --tier small > docs/agent-bridge/small-tools-manifest.json
+cd ../anytype-heart
+go run ./cmd/anytype tools --tier small > ../anytype-kotlin/docs/agent-bridge/small-tools-manifest.json
 ```
 
 ## Security notes

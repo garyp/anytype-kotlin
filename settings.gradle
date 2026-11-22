@@ -26,6 +26,19 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven { url "https://jitpack.io" }
+        // anytype-heart-android with the agent-bridge fix comes from the garyp/anytype-heart fork
+        // (branch agentbridge, tags <upstream>-agentbridge.N). See scripts/agent-bridge/README.md.
+        maven {
+            name = "HeartFork"
+            url = uri("https://maven.pkg.github.com/garyp/anytype-heart")
+            credentials {
+                username = githubProperties['gpr.usr']
+                password = githubProperties['gpr.key']
+            }
+            content {
+                includeModule("io.anyproto", "anytype-heart-android")
+            }
+        }
         maven {
             name = "GitHubPackages"
             url = uri("https://maven.pkg.github.com/anyproto/anytype-heart")

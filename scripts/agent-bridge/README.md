@@ -1,27 +1,84 @@
 # Agent bridge tooling
 
-> **Before the first build:** the app depends on the patched heart artifact
-> `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1`, which exists only in Maven Local. A
-> fresh clone cannot build `:app` until `scripts/agent-bridge/build-heart-android.sh` (all ABIs,
-> 30-60+ minutes) has published it; see "Building the patched heart for Android" below. Export
-> `UNSPLASH_KEY` and `INHOUSE_KEY` for that build, or the Unsplash cover picker will not work.
+The app depends on `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1` (`middlewareVersion`
+in `gradle/libs.versions.toml`). Upstream heart's mobile library never calls
+`api.SetMiddlewareParams`, so its JSON API answers every authenticated request with an empty 500.
+The fixed heart is built from the fork
+[garyp/anytype-heart](https://github.com/garyp/anytype-heart), branch `agentbridge`. Nothing in this
+repository builds heart.
+
+## The heart fork
+
+Branch `agentbridge` is upstream tag `v0.51.6` plus three commits:
+
+1. `clientlibrary: set JSON API middleware params in the mobile library` (a25d5c3): the one-line
+   fix in `clientlibrary/service/lib.go` and the regression test
+   `TestMobileLibrarySetsApiMiddlewareParams` in `clientlibrary/service/lib_test.go`.
+2. `ci: publish to the fork's own package registry ...`: `build.gradle` publishes to
+   `https://maven.pkg.github.com/${GITHUB_REPOSITORY}`, the `anytype-suite` and `anytype-cli`
+   triggers run only for `anyproto`, and the `ANYTYPE_PAT` rewrite runs only when that secret is
+   set. The rest of upstream `build.yml` is unchanged.
+3. `cmd/agentbridge-harness`: the native Linux harness used by the contract tests (below).
+
+Pushing a `v*.*.*` tag (for example `v0.51.6-agentbridge.1`) runs the fork's `Build` workflow. It
+builds the AAR for all ABIs and publishes `io.anyproto:anytype-heart-android:<tag>` to the fork's
+GitHub Packages, `https://maven.pkg.github.com/garyp/anytype-heart`.
+
+Setup of the fork (once):
+
+- **Actions must be enabled** on the fork (GitHub disables workflows on new forks: Actions tab,
+  "I understand my workflows, go ahead and enable them").
+- **Repository secrets** (Settings, Secrets and variables, Actions):
+  - `UNSPLASH_KEY` sets `util/unsplash.DefaultToken`. Without it the Unsplash cover picker does
+    not work.
+  - `INHOUSE_KEY` sets `metrics.DefaultInHouseKey`. Without it in-house analytics stay silent.
+  - `ANYTYPE_PAT` is probably not needed (the workflow skips it when empty); add it only if the
+    build fails to fetch a private dependency.
+  Never commit the values.
+
+### Resolving the artifact
+
+`settings.gradle` has a `HeartFork` repository, `https://maven.pkg.github.com/garyp/anytype-heart`,
+restricted to the module `io.anyproto:anytype-heart-android`, ahead of the anyproto repository
+(which stays for other artifacts). It uses the same `github.properties` credentials
+(`gpr.usr`, `gpr.key`). GitHub Packages needs a token even for public packages: the
+`gpr.key` token must have `read:packages` and be able to read `garyp/anytype-heart`.
+
+Status (2026-11-22): the tag `v0.51.6-agentbridge.1` is pushed and the fork's first `Build` run
+was still in progress, so the switch to the fork's package was not yet verified end to end; builds
+so far resolved the artifact from Maven Local.
+
+`mavenLocal()` stays the first repository, so a copy of the same coordinates in Maven Local wins
+over the fork's package. Delete `~/.m2/repository/io/anyproto/anytype-heart-android/<version>` to
+force the download.
+
+### Bumping heart
+
+1. Rebase the fork's `agentbridge` branch onto the new upstream tag
+   (`git rebase --onto vX.Y.Z v0.51.6 agentbridge`). Drop the fix commit if upstream now calls
+   `api.SetMiddlewareParams(mw)` in `clientlibrary/service` (see "Dropping the fork").
+2. Tag `vX.Y.Z-agentbridge.N` and push the tag (or create a GitHub release with that tag). Wait for
+   the `Build` workflow to publish the package.
+3. Set `middlewareVersion` in `gradle/libs.versions.toml` to `vX.Y.Z-agentbridge.N`, and the tag
+   that `run-contract-tests.sh` checks (`HEART_TAG`).
+4. Rerun `run-contract-tests.sh` against the new tag.
+5. Regenerate `docs/agent-bridge/small-tools-manifest.json` (see
+   `docs/agent-bridge/agent-integration.md`).
+
+### Dropping the fork
+
+When upstream calls `api.SetMiddlewareParams(mw)` in `clientlibrary/service`, depend on the
+official `anytype-heart-android` artifact, delete the `HeartFork` repository from
+`settings.gradle`, and build the harness from a checkout that has `cmd/agentbridge-harness` on top
+of upstream. The upstream issue draft is `docs/agent-bridge/heart-issue-draft.md` (not filed).
 
 ## Native heart harness
 
-Contract tests for the agent bridge run against the real anytype-heart (Go middleware) built as a
-native Linux binary. Heart's mobile library never calls `api.SetMiddlewareParams`, so the JSON API
-nil-dereferences on every authenticated request. `heart-mobile-api.patch` adds that call.
-
-- `fetch-heart-src.sh [--unpatched]` downloads heart v0.51.6 and tantivy-go v1.0.6 from the Go
-  module proxy into `build/agent-bridge/src/` (idempotent). Patched heart goes to `src/heart`,
-  pristine heart (with `--unpatched`) to `src/heart-unpatched`.
-- `heart-harness/build.sh [--unpatched]` fetches the sources, builds `libtantivy_go.a` with cargo
-  if missing (about 4 minutes), and builds `build/agent-bridge/bin/harness`
-  (or `harness-unpatched`). Needs Go (GOTOOLCHAIN=auto fetches the pinned toolchain), a Rust
-  toolchain and a C compiler.
-- `heart-harness/run.sh [--unpatched] [-root DIR]` boots heart with a fresh local-only account and
-  prints `BASE_URL=`, `API_KEY=`, `APP_HASH=`, `CONTROL_URL=`, `SPACE_ID=` and `READY`, then keeps
-  running until SIGINT/SIGTERM.
+Contract tests run against the real heart built as a native Linux binary:
+`cmd/agentbridge-harness` in the fork. It boots heart through the same `clientlibrary/service`
+entry points the AAR exposes, with a fresh local-only account, and prints `BASE_URL=`, `API_KEY=`,
+`APP_HASH=`, `CONTROL_URL=`, `SPACE_ID=` and `READY`, then keeps running until SIGINT/SIGTERM.
+`-root DIR` sets the data root.
 
 Control endpoints on `CONTROL_URL`:
 
@@ -30,18 +87,29 @@ Control endpoints on `CONTROL_URL`:
   returns `{"appKey","appHash"}`
 - `GET /listapps`, `POST /revoke?hash=`
 - `POST /createspace?name=` returns `{"spaceId"}`
-
-Check: with the patched harness `GET $BASE_URL/v2/spaces` with `Authorization: Bearer $API_KEY`
-returns 200; with `run.sh --unpatched` it returns 500.
+- `GET /events`: the `Account.JsonApiStatus` events seen so far
 
 ## Contract tests against real heart
 
-`run-contract-tests.sh` starts the harness from a temp dir (it writes `account_stop.json` into its
-cwd on exit), exports `ANYTYPE_HEART_BASE_URL/API_KEY/CONTROL_URL/SPACE_ID` and runs the
-`FlowRunnerRealHeartTest` of `:agent-bridge-testapp`. Without those env vars the test is skipped
-(`Assume`), so plain `testDebugUnitTest` stays green.
+```bash
+HEART_DIR=../anytype-heart scripts/agent-bridge/run-contract-tests.sh [extra gradle args]
+```
 
-Behaviour verified with curl against heart v0.51.6 (patched):
+`HEART_DIR` (default `../anytype-heart`) is a checkout of the fork at tag `v0.51.6-agentbridge.1`
+or on branch `agentbridge`; the script refuses anything else. It needs Go (`GOTOOLCHAIN=auto`
+fetches the toolchain in `go.mod`), a Rust toolchain and a C compiler.
+
+1. tantivy-go: heart links `libtantivy_go.a` through cgo. The script takes the tantivy-go source
+   at the version in the fork's `go.mod` from the Go module cache (`go mod download`), copies it
+   to `build/agent-bridge/tantivy-go-<version>/`, and builds the library with cargo (about 4
+   minutes, once; the result is cached there).
+2. It builds `build/agent-bridge/bin/agentbridge-harness` from `$HEART_DIR`.
+3. It starts the harness from a temp dir (the harness writes `account_stop.json` into its cwd on
+   exit), exports `ANYTYPE_HEART_BASE_URL/API_KEY/CONTROL_URL/SPACE_ID` and runs the
+   `FlowRunnerRealHeartTest` of `:agent-bridge-testapp` (`--rerun`). Without those env vars the
+   test is skipped (`Assume`), so plain `testDebugUnitTest` stays green.
+
+Behaviour verified with curl against heart v0.51.6 with the fix:
 
 - Keyless `/v1/spaces`, `/v2/spaces`, `/mcp/small`: 401 `missing authorization header`.
 - Revoked key: 401 `{"object":"error","status":401,"code":"unauthorized","message":"invalid api key"}`.
@@ -63,23 +131,6 @@ Behaviour verified with curl against heart v0.51.6 (patched):
   read{object,space,mode}, describe{space,type,...}, set_properties{object,...}, add_blocks{object,markdown,after,under,space},
   edit_text{object,find,replace,block,space}.
 
-## Building the patched heart for Android
-
-`build-heart-android.sh [--abis arm64-v8a,x86_64]` fetches heart, applies `heart-mobile-api.patch`,
-builds tantivy for each Android target, runs `gomobile bind` and publishes the AAR to Maven Local
-as `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1`. All four ABIs take 30-60+ minutes.
-`mavenLocal()` is the first repository, and `middlewareVersion` in `gradle/libs.versions.toml`
-points at that version. Needs Go, Rust, the Android NDK and Maven.
-
-- `--abis` narrows the build for a quicker local try. A narrowed AAR is published under its own
-  version, `v0.51.6-agentbridge.1-<goarch>...` (for example `v0.51.6-agentbridge.1-arm64-amd64`),
-  so it never overwrites the full artifact; set `middlewareVersion` to it by hand to use it.
-- Keys: upstream CI stamps two keys into heart. The script does the same when the environment
-  variables are set, and warns when they are not. Never commit their values.
-  - `UNSPLASH_KEY` sets `util/unsplash.DefaultToken`. Without it the Unsplash cover picker does
-    not work.
-  - `INHOUSE_KEY` sets `metrics.DefaultInHouseKey`. Without it in-house analytics stay silent.
-
 ## Building and testing the app
 
 Gradle needs JDK 17 and, in this environment, `--no-configuration-cache`:
@@ -88,7 +139,7 @@ Gradle needs JDK 17 and, in this environment, `--no-configuration-cache`:
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANDROID_HOME=/opt/android-sdk
 G="./gradlew --no-configuration-cache"
 $G :app:assembleDebug :agent-bridge-testapp:assembleDebug
-scripts/agent-bridge/run-contract-tests.sh
+HEART_DIR=../anytype-heart scripts/agent-bridge/run-contract-tests.sh
 ```
 
 On an emulator or phone (Android 15+):
@@ -107,22 +158,6 @@ builds signed with that certificate.
 Log in to a (local-only) account in Anytype first. The instrumented test drives the approval screen
 and a read/write flow through the bridge. It has been compiled but not run yet (no emulator in the
 build environment).
-
-## Upgrading heart
-
-1. Bump the version in `fetch-heart-src.sh` and `build-heart-android.sh` (`HEART_VERSION`,
-   `VERSION`), and `middlewareVersion` in `gradle/libs.versions.toml`.
-2. Check the patch still applies; rebuild the harness (`heart-harness/build.sh`) and the AAR.
-3. Rerun `run-contract-tests.sh`.
-4. Regenerate `docs/agent-bridge/small-tools-manifest.json` (see `docs/agent-bridge/agent-integration.md`).
-
-## Dropping the patch
-
-When upstream calls `api.SetMiddlewareParams(mw)` in `clientlibrary/service`, delete
-`heart-mobile-api.patch` and the patch step in `fetch-heart-src.sh`, and depend on the official
-`anytype-heart-android` artifact. The unpatched harness (`run.sh --unpatched`) shows whether a
-given heart version still has the bug (500 means yes). The upstream issue draft is
-`docs/agent-bridge/heart-issue-draft.md` (not filed).
 
 ## Accepted loopback exposure
 

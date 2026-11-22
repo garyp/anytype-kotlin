@@ -52,28 +52,43 @@ One call in `clientlibrary/service/lib.go`, inside `init()`, after `mw` is creat
 +	api.SetMiddlewareParams(mw)
 ```
 
-The patch the fork uses is `scripts/agent-bridge/heart-mobile-api.patch`.
+The fork carries this fix as commit
+[a25d5c3](https://github.com/garyp/anytype-heart/commit/a25d5c3c2933db68e2ad4cc15332932e3b3a5903)
+("clientlibrary: set JSON API middleware params in the mobile library") on branch `agentbridge`
+of [garyp/anytype-heart](https://github.com/garyp/anytype-heart/tree/agentbridge) (tag
+`v0.51.6-agentbridge.1`). Besides the call it adds `api.MiddlewareParamsSet()` to
+`core/api/service.go` and the regression test `TestMobileLibrarySetsApiMiddlewareParams` in
+`clientlibrary/service/lib_test.go`, which fails when the mobile library's `init()` does not call
+`api.SetMiddlewareParams`:
+
+```bash
+go test -tags "nosigar nowatchdog" -run TestMobileLibrarySetsApiMiddlewareParams ./clientlibrary/service
+```
 
 ## Reproduction
 
-The fork has a native Linux harness that boots heart with a fresh local-only account, starts the
-JSON API on loopback and creates an app key (`scripts/agent-bridge/heart-harness`, see the README
-in `scripts/agent-bridge/`).
+The fork's branch also has a native Linux harness, `cmd/agentbridge-harness`. It boots heart
+through the same `clientlibrary/service` entry points gomobile exposes, with a fresh local-only
+account, starts the JSON API on loopback and creates an app key. It prints `BASE_URL=` and
+`API_KEY=`. It needs `libtantivy_go.a` for the host in `CGO_LDFLAGS` (see
+`scripts/agent-bridge/run-contract-tests.sh` in anytype-kotlin for the full recipe).
 
 ```bash
-scripts/agent-bridge/heart-harness/build.sh --unpatched   # pristine v0.51.6
-scripts/agent-bridge/heart-harness/run.sh --unpatched     # prints BASE_URL= and API_KEY=
-curl -i -H "Authorization: Bearer $API_KEY" "$BASE_URL/v2/spaces"   # HTTP 500, empty body
-
-scripts/agent-bridge/heart-harness/build.sh               # with the one-line patch
-scripts/agent-bridge/heart-harness/run.sh
+git checkout agentbridge
+go build -tags "nosigar nowatchdog" -o harness ./cmd/agentbridge-harness
+(cd "$(mktemp -d)" && /path/to/harness)                             # prints BASE_URL= and API_KEY=
 curl -i -H "Authorization: Bearer $API_KEY" "$BASE_URL/v2/spaces"   # HTTP 200, the spaces
+
+git revert --no-commit a25d5c3                                      # without the fix
+go build -tags "nosigar nowatchdog" -o harness ./cmd/agentbridge-harness
+(cd "$(mktemp -d)" && /path/to/harness)
+curl -i -H "Authorization: Bearer $API_KEY" "$BASE_URL/v2/spaces"   # HTTP 500, empty body
 ```
 
-Patched: 200. Unpatched: 500.
+With the fix: 200. Without: 500.
 
 ## Impact
 
 Nothing built on the mobile library can use the JSON API or MCP, even though the listener can be
-started. A regression test that boots the mobile `service` package and makes one authenticated
-request would catch it.
+started. A regression test in the mobile `service` package catches it; the fork's
+`TestMobileLibrarySetsApiMiddlewareParams` asserts the wiring.
