@@ -45,7 +45,6 @@ android {
     testOptions {
         unitTests.returnDefaultValues = true
         unitTests.includeAndroidResources = true
-        unitTests.all { it.jvmArgs '--add-opens=java.base/java.net=ALL-UNNAMED' }
     }
 }
 
@@ -59,6 +58,21 @@ dependencies {
     implementation libs.composeFoundation
     implementation libs.composeMaterial3
     implementation libs.activityCompose
+    // The test agent talks to the endpoint the way an integrator would: OkHttp for REST, the MCP
+    // Kotlin SDK over Ktor (OkHttp engine) for MCP.
+    implementation libs.okhttp
+    implementation libs.mcpKotlinClient
+    implementation libs.ktorClientOkhttp
+    constraints {
+        // The MCP SDK 0.16.0 POM asks for kotlin-stdlib 2.4.21, whose class metadata (2.4) this
+        // repo's Kotlin 2.2 compiler cannot read (it reads up to 2.3). Nothing on this classpath
+        // needs more than the 2.3 stdlib: the SDK is built for Kotlin 2.2, Ktor 3.5.2 for 2.3.
+        // Drop this once the repo is on Kotlin 2.3+.
+        implementation('org.jetbrains.kotlin:kotlin-stdlib') {
+            version { strictly '2.3.21' }
+            because 'Kotlin 2.2 compiler cannot read stdlib 2.4 metadata'
+        }
+    }
 
     testImplementation libs.junit
     testImplementation libs.robolectricBridge

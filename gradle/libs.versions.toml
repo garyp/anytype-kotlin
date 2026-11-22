@@ -73,6 +73,10 @@ composeQrCodeVersion = '1.0.1'
 fragmentComposeVersion = "1.8.6"
 glanceVersion = "1.1.1"
 androidSvgVersion = "1.4"
+# Agent bridge test app: the MCP Kotlin SDK, and the Ktor engine and OkHttp at the versions its POM uses.
+mcpKotlinClient = "0.16.0"
+ktorVersion = "3.5.2"
+okhttpVersion = "5.3.2"
 
 [libraries]
 middleware = { module = "io.anyproto:anytype-heart-android", version.ref = "middlewareVersion" }
@@ -184,6 +188,9 @@ glance = { module = "androidx.glance:glance", version.ref = "glanceVersion" }
 glanceAppWidget = { module = "androidx.glance:glance-appwidget", version.ref = "glanceVersion" }
 glanceMaterial3 = { module = "androidx.glance:glance-material3", version.ref = "glanceVersion" }
 androidSvg = { module = "com.caverock:androidsvg-aar", version.ref = "androidSvgVersion" }
+mcpKotlinClient = { module = "io.modelcontextprotocol:kotlin-sdk-client", version.ref = "mcpKotlinClient" }
+ktorClientOkhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktorVersion" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttpVersion" }
 
 [bundles]
 

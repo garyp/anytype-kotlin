@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts a real anytype-heart (native harness), exports ANYTYPE_HEART_* and runs the gated
-# contract tests. Usage: run-contract-tests.sh [extra gradle args]
+# real-heart test of the test app (FlowRunnerRealHeartTest). Usage: run-contract-tests.sh [extra gradle args]
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
@@ -35,7 +35,7 @@ export ANYTYPE_HEART_SPACE_ID="$(val SPACE_ID)"
 echo "heart at $ANYTYPE_HEART_BASE_URL (control $ANYTYPE_HEART_CONTROL_URL)"
 
 cd "$REPO"
-# --rerun: the env vars are not Gradle task inputs, so a cached skipped run must not be reused.
-"$G" :agent-bridge-client:testDebugUnitTest --tests '*realheart*' --rerun "$@"
-# The test agent's FlowRunner against the same heart (the API key is an app key from the harness).
+# The test agent's FlowRunner (OkHttp + MCP SDK) against this heart; the API key is an app key from
+# the harness. --rerun: the env vars are not Gradle task inputs, so a cached skipped run must not
+# be reused.
 "$G" :agent-bridge-testapp:testDebugUnitTest --tests '*RealHeart*' --rerun "$@"

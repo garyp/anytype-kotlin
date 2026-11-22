@@ -72,6 +72,9 @@ class TestServer(private val handler: (RecordedRequest) -> TestResponse) {
         val bytes = resp.body.toByteArray(Charsets.UTF_8)
         val head = StringBuilder("HTTP/1.1 ${resp.code} X\r\n")
         resp.headers.forEach { (k, v) -> head.append("$k: $v\r\n") }
+        if (bytes.isNotEmpty() && resp.headers.keys.none { it.equals("Content-Type", true) }) {
+            head.append("Content-Type: application/json\r\n")
+        }
         head.append("Content-Length: ${bytes.size}\r\nConnection: close\r\n\r\n")
         c.getOutputStream().apply { write(head.toString().toByteArray()); write(bytes); flush() }
     }

@@ -38,7 +38,7 @@ returns 200; with `run.sh --unpatched` it returns 500.
 
 `run-contract-tests.sh` starts the harness from a temp dir (it writes `account_stop.json` into its
 cwd on exit), exports `ANYTYPE_HEART_BASE_URL/API_KEY/CONTROL_URL/SPACE_ID` and runs the
-`*realheart*` tests of `:agent-bridge-client`. Without those env vars the tests are skipped
+`FlowRunnerRealHeartTest` of `:agent-bridge-testapp`. Without those env vars the test is skipped
 (`Assume`), so plain `testDebugUnitTest` stays green.
 
 Behaviour verified with curl against heart v0.51.6 (patched):
@@ -57,7 +57,7 @@ Behaviour verified with curl against heart v0.51.6 (patched):
 - Read-only key: MCP `create` returns HTTP 200 with `result.isError=true` and text
   "the HTTP API is a write and the key's grant is read-only..."; REST write is 403 `write_not_granted`.
 - MCP tool results carry `structuredContent` (`create` -> `{id,type,etag}`, `find` -> `{handles:[{n,id,name,type}]}`);
-  `find` handle numbers are per MCP session, so `read` must use the same `McpClient`. `find` is
+  `find` handle numbers are per MCP session, so `read` must use the same MCP session. `find` is
   eventually consistent (full-text index), so the test polls.
 - MCP args (from `tools/list`): create{space,type,name,markdown,properties}, find{space,query,type,filter,limit},
   read{object,space,mode}, describe{space,type,...}, set_properties{object,...}, add_blocks{object,markdown,after,under,space},

@@ -28,8 +28,6 @@ android {
 
     testOptions {
         unitTests.returnDefaultValues = true
-        // JDK HttpURLConnection rejects PATCH; HttpTransport sets it reflectively on a JVM.
-        unitTests.all { it.jvmArgs '--add-opens=java.base/java.net=ALL-UNNAMED' }
     }
 }
 
