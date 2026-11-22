@@ -6,13 +6,13 @@
 # Usage: [HEART_DIR=../anytype-heart] run-contract-tests.sh [extra gradle args]
 #
 # HEART_DIR (default: ../anytype-heart next to this repository) must be the fork at tag
-# v0.51.6-agentbridge.1 or on branch agentbridge. Needs Go (GOTOOLCHAIN=auto fetches the version in
+# v0.51.6-agentbridge.2 or on branch agentbridge. Needs Go (GOTOOLCHAIN=auto fetches the version in
 # go.mod), cargo (for tantivy-go's static library, ~4 min, built once and cached under
 # build/agent-bridge/) and a C toolchain.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-HEART_TAG="v0.51.6-agentbridge.1"
+HEART_TAG="v0.51.6-agentbridge.2"
 HEART_BRANCH="agentbridge"
 HEART_DIR="$(cd "${HEART_DIR:-$REPO/../anytype-heart}" && pwd)"
 OUT="$REPO/build/agent-bridge"

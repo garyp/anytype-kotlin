@@ -56,7 +56,7 @@ The fork carries this fix as commit
 [a25d5c3](https://github.com/garyp/anytype-heart/commit/a25d5c3c2933db68e2ad4cc15332932e3b3a5903)
 ("clientlibrary: set JSON API middleware params in the mobile library") on branch `agentbridge`
 of [garyp/anytype-heart](https://github.com/garyp/anytype-heart/tree/agentbridge) (tag
-`v0.51.6-agentbridge.1`). Besides the call it adds `api.MiddlewareParamsSet()` to
+`v0.51.6-agentbridge.2`). Besides the call it adds `api.MiddlewareParamsSet()` to
 `core/api/service.go` and the regression test `TestMobileLibrarySetsApiMiddlewareParams` in
 `clientlibrary/service/lib_test.go`, which fails when the mobile library's `init()` does not call
 `api.SetMiddlewareParams`. The test links heart, so cgo needs the host's `libtantivy_go.a` (build

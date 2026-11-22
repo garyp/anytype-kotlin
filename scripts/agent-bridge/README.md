@@ -1,6 +1,6 @@
 # Agent bridge tooling
 
-The app depends on `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.1` (`middlewareVersion`
+The app depends on `io.anyproto:anytype-heart-android:v0.51.6-agentbridge.2` (`middlewareVersion`
 in `gradle/libs.versions.toml`). Upstream heart's mobile library never calls
 `api.SetMiddlewareParams`, so its JSON API answers every authenticated request with an empty 500.
 The fixed heart is built from the fork
@@ -20,7 +20,7 @@ Branch `agentbridge` is upstream tag `v0.51.6` plus three commits:
    set. The rest of upstream `build.yml` is unchanged.
 3. `cmd/agentbridge-harness`: the native Linux harness used by the contract tests (below).
 
-Pushing a `v*.*.*` tag (for example `v0.51.6-agentbridge.1`) runs the fork's `Build` workflow. It
+Pushing a `v*.*.*` tag (for example `v0.51.6-agentbridge.2`) runs the fork's `Build` workflow. It
 builds the AAR for all ABIs and publishes `io.anyproto:anytype-heart-android:<tag>` to the fork's
 GitHub Packages, `https://maven.pkg.github.com/garyp/anytype-heart`.
 
@@ -44,9 +44,12 @@ restricted to the module `io.anyproto:anytype-heart-android`, ahead of the anypr
 (`gpr.usr`, `gpr.key`). GitHub Packages needs a token even for public packages: the
 `gpr.key` token must have `read:packages` and be able to read `garyp/anytype-heart`.
 
-Status (2026-11-22): the tag `v0.51.6-agentbridge.1` is pushed and the fork's first `Build` run
-was still in progress, so the switch to the fork's package was not yet verified end to end; builds
-so far resolved the artifact from Maven Local.
+Status (2026-11-22): the first tag, `v0.51.6-agentbridge.1`, could not be built by the fork's
+`Build` workflow. `actions/setup-go` with `go-version: '1.26'` now resolves to Go 1.26.11, which
+refuses tantivy-go v1.0.6's prebuilt libraries ("disallowed LTO section __LLVM,__bitcode in #cgo
+LDFLAGS"). Upstream fixed this on `develop` in `2e54309f6` (tantivy-go v1.0.7), and that commit
+is cherry-picked onto `agentbridge`, which is tagged `v0.51.6-agentbridge.2`. Until that tag's
+`Build` run publishes, the switch to the fork's package is not verified end to end.
 
 `mavenLocal()` stays the first repository, so a copy of the same coordinates in Maven Local wins
 over the fork's package. Delete `~/.m2/repository/io/anyproto/anytype-heart-android/<version>` to
@@ -97,7 +100,7 @@ Control endpoints on `CONTROL_URL`:
 HEART_DIR=../anytype-heart scripts/agent-bridge/run-contract-tests.sh [extra gradle args]
 ```
 
-`HEART_DIR` (default `../anytype-heart`) is a checkout of the fork at tag `v0.51.6-agentbridge.1`
+`HEART_DIR` (default `../anytype-heart`) is a checkout of the fork at tag `v0.51.6-agentbridge.2`
 or on branch `agentbridge`; the script refuses anything else. It needs Go (`GOTOOLCHAIN=auto`
 fetches the toolchain in `go.mod`), a Rust toolchain and a C compiler.
 
