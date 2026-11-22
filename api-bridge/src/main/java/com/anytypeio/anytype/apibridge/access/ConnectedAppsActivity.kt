@@ -7,7 +7,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,12 +26,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,8 +36,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
@@ -52,6 +51,15 @@ import com.anytypeio.anytype.apibridge.Approval
 import com.anytypeio.anytype.apibridge.BridgeController
 import com.anytypeio.anytype.apibridge.KeyNames
 import com.anytypeio.anytype.apibridge.consent.ConsentState
+import com.anytypeio.anytype.core_ui.R
+import com.anytypeio.anytype.core_ui.extensions.contentWidthDp
+import com.anytypeio.anytype.core_ui.views.ButtonSize
+import com.anytypeio.anytype.core_ui.views.ButtonWarning
+import com.anytypeio.anytype.core_ui.views.Caption1Medium
+import com.anytypeio.anytype.core_ui.views.Caption1Regular
+import com.anytypeio.anytype.core_ui.views.PreviewTitle1Medium
+import com.anytypeio.anytype.core_ui.views.Title1
+import com.anytypeio.anytype.core_ui.views.UxSmallTextRegular
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CancellationException
@@ -104,9 +112,7 @@ class ConnectedAppsActivity : ComponentActivity() {
             filterTouchesWhenObscured = true
             setAccessibilityDataSensitive(View.ACCESSIBILITY_DATA_SENSITIVE_YES)
             setContent {
-                AccessTheme {
-                    AccessContent(ui, ::onRevoke)
-                }
+                AccessContent(ui, ::onRevoke, onBack = ::finish)
             }
         })
         lifecycleScope.launch { load() }
@@ -194,26 +200,68 @@ class ConnectedAppsActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun AccessContent(state: UiState, onRevoke: (Row) -> Unit) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            // Android 15+ draws apps edge to edge: keep the content clear of the system bars.
-            Column(Modifier.windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 16.dp)) {
-                Spacer(Modifier.height(24.dp))
-                Text("Connected apps", style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(16.dp))
+    private fun AccessContent(state: UiState, onRevoke: (Row) -> Unit, onBack: () -> Unit) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(colorResource(R.color.background_primary))
+                // Android 15+ draws apps edge to edge: keep the content clear of the system bars.
+                .windowInsetsPadding(WindowInsets.safeDrawing),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Column(Modifier.widthIn(max = contentWidthDp()).fillMaxWidth()) {
+                Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) {
+                    Image(
+                        painterResource(R.drawable.ic_default_top_back),
+                        contentDescription = "Back",
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 4.dp)
+                            .clickable(role = Role.Button, onClick = onBack)
+                            .padding(10.dp)
+                            .size(24.dp)
+                    )
+                    Text(
+                        "Connected apps",
+                        Modifier.padding(horizontal = 56.dp),
+                        style = Title1,
+                        color = colorResource(R.color.text_primary),
+                        maxLines = 1
+                    )
+                }
                 state.notice?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error)
-                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        it,
+                        Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
+                        style = UxSmallTextRegular,
+                        color = colorResource(R.color.palette_system_red)
+                    )
                 }
                 when {
                     state.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+                        CircularProgressIndicator(color = colorResource(R.color.glyph_active))
                     }
-                    state.error != null -> Text(state.error, color = MaterialTheme.colorScheme.error)
-                    state.rows.isEmpty() -> Text(EMPTY, style = MaterialTheme.typography.bodyLarge)
-                    else -> LazyColumn(Modifier.widthIn(max = 600.dp)) {
+                    state.error != null -> Message(state.error, colorResource(R.color.palette_system_red))
+                    state.rows.isEmpty() -> Message(EMPTY, colorResource(R.color.text_secondary))
+                    else -> LazyColumn(Modifier.fillMaxWidth()) {
+                        item {
+                            Text(
+                                "Apps with access",
+                                Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
+                                style = Caption1Medium,
+                                color = colorResource(R.color.text_secondary)
+                            )
+                        }
                         items(state.rows, key = { it.approval.packageName }) { row ->
                             ApprovalRow(row, enabled = row.approval.packageName !in state.busy, onRevoke)
+                        }
+                        item {
+                            Text(
+                                FOOTER,
+                                Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
+                                style = Caption1Regular,
+                                color = colorResource(R.color.text_secondary)
+                            )
                         }
                     }
                 }
@@ -222,10 +270,21 @@ class ConnectedAppsActivity : ComponentActivity() {
     }
 
     @Composable
+    private fun Message(text: String, color: androidx.compose.ui.graphics.Color) {
+        Text(
+            text,
+            Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 48.dp),
+            style = UxSmallTextRegular,
+            color = color,
+            textAlign = TextAlign.Center
+        )
+    }
+
+    @Composable
     private fun ApprovalRow(row: Row, enabled: Boolean, onRevoke: (Row) -> Unit) {
         val a = row.approval
         Row(
-            Modifier.fillMaxWidth().padding(vertical = 12.dp),
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             row.icon?.let {
@@ -233,29 +292,33 @@ class ConnectedAppsActivity : ComponentActivity() {
                 Spacer(Modifier.width(12.dp))
             }
             Column(Modifier.weight(1f)) {
-                Text(row.label, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "${a.packageName} · ${ConsentState.shortCert(a.certSha256)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(row.label, style = PreviewTitle1Medium, color = colorResource(R.color.text_primary))
                 Text(
                     "${accessText(a.access)} · ${grantText(a)} · ${dateText(a.approvedAt)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = Caption1Regular,
+                    color = colorResource(R.color.text_secondary)
+                )
+                Text(
+                    "${a.packageName} · ${ConsentState.shortCert(a.certSha256)}",
+                    style = Caption1Regular,
+                    color = colorResource(R.color.text_secondary)
                 )
             }
             Spacer(Modifier.width(8.dp))
-            OutlinedButton(
+            ButtonWarning(
+                text = "Revoke",
                 onClick = { onRevoke(row) },
-                enabled = enabled,
+                size = ButtonSize.Small,
+                isEnabled = enabled,
                 modifier = Modifier.testTag(revokeTag(a.packageName))
-            ) { Text("Revoke") }
+            )
         }
     }
 
     companion object {
         internal const val EMPTY = "No apps have access to Anytype."
+        internal const val FOOTER =
+            "Connected apps can use Anytype's local API while they are connected. Revoking an app removes its access."
         internal const val SIGN_IN_FIRST = "Sign in to Anytype first"
         internal const val NOT_READY = "Anytype isn't ready. Try again in a moment."
         internal const val REVOKE_RETRYING =
@@ -273,12 +336,4 @@ class ConnectedAppsActivity : ComponentActivity() {
 
         private fun dateText(ms: Long) = DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(ms))
     }
-}
-
-@RequiresApi(35)
-@Composable
-private fun AccessTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val colors = if (isSystemInDarkTheme()) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    MaterialTheme(colorScheme = colors, content = content)
 }

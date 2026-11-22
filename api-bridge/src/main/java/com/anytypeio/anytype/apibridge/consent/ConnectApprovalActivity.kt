@@ -8,37 +8,40 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.annotation.DrawableRes
 import androidx.annotation.RequiresApi
 import androidx.annotation.VisibleForTesting
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -48,17 +51,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -73,6 +79,16 @@ import com.anytypeio.anytype.apibridge.ApiBridge
 import com.anytypeio.anytype.apibridge.Approval
 import com.anytypeio.anytype.apibridge.CallerVerifier
 import com.anytypeio.anytype.apibridge.access.ConnectedAppsActivity
+import com.anytypeio.anytype.core_ui.R
+import com.anytypeio.anytype.core_ui.extensions.contentWidthDp
+import com.anytypeio.anytype.core_ui.views.BodyRegular
+import com.anytypeio.anytype.core_ui.views.ButtonPrimary
+import com.anytypeio.anytype.core_ui.views.ButtonSecondary
+import com.anytypeio.anytype.core_ui.views.ButtonSize
+import com.anytypeio.anytype.core_ui.views.Caption1Medium
+import com.anytypeio.anytype.core_ui.views.Caption1Regular
+import com.anytypeio.anytype.core_ui.views.HeadlineHeading
+import com.anytypeio.anytype.core_ui.views.UxSmallTextRegular
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -140,25 +156,23 @@ class ConnectApprovalActivity : ComponentActivity() {
         setContentView(ComposeView(this).apply {
             protect()
             setContent {
-                ConsentTheme {
-                    ConsentDialog(
-                        state = state,
-                        ui = ConsentUi(
-                            icon = icon,
-                            armed = armed,
-                            armDelayMs = armDelayMs,
-                            onArmed = { armed = it },
-                            onDialogRoot = { dialogRoot = it },
-                            onAllowDown = ::onAllowDown,
-                            onToggleSpace = { state = state.toggleSpace(it) },
-                            onAllSpaces = { state = state.setAllSpaces(it) },
-                            onAccess = { state = state.setAccess(it) },
-                            onAllow = ::onAllow,
-                            onDeny = ::onDeny,
-                            onManageAccess = ::onManageAccess
-                        )
+                ConsentDialog(
+                    state = state,
+                    ui = ConsentUi(
+                        icon = icon,
+                        armed = armed,
+                        armDelayMs = armDelayMs,
+                        onArmed = { armed = it },
+                        onDialogRoot = { dialogRoot = it },
+                        onAllowDown = ::onAllowDown,
+                        onToggleSpace = { state = state.toggleSpace(it) },
+                        onAllSpaces = { state = state.setAllSpaces(it) },
+                        onAccess = { state = state.setAccess(it) },
+                        onAllow = ::onAllow,
+                        onDeny = ::onDeny,
+                        onManageAccess = ::onManageAccess
                     )
-                }
+                )
             }
         })
         lifecycleScope.launch { load(c) }
@@ -290,7 +304,7 @@ class ConnectApprovalActivity : ComponentActivity() {
         internal const val FAILED = "Something went wrong. Try again."
         internal const val MANAGE_ACCESS = "Manage connected apps"
         internal const val ICON_TAG = "connected_app_icon"
-        private const val ICON_DP = 40
+        private const val ICON_DP = 56
         private const val ARM_DELAY_MS = 750L
 
         private val defaultCertLookup = CertLookup { context, pkg ->
@@ -325,13 +339,6 @@ private fun View.protect() {
     setAccessibilityDataSensitive(View.ACCESSIBILITY_DATA_SENSITIVE_YES)
 }
 
-@RequiresApi(35)
-@Composable
-private fun ConsentTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    val colors = if (isSystemInDarkTheme()) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-    MaterialTheme(colorScheme = colors, content = content)
-}
 
 private class ConsentUi(
     val icon: ImageBitmap?,
@@ -348,6 +355,11 @@ private class ConsentUi(
     val onManageAccess: () -> Unit
 )
 
+/**
+ * An Anytype bottom sheet, drawn inside a full-window Compose [Dialog]: the dialog window is what
+ * carries the protections below, so the sheet look must not come from a different window
+ * (such as Material's ModalBottomSheet). Tapping outside does nothing; Back means Don't allow.
+ */
 @RequiresApi(35)
 @Composable
 private fun ConsentDialog(state: ConsentState, ui: ConsentUi) {
@@ -355,7 +367,9 @@ private fun ConsentDialog(state: ConsentState, ui: ConsentUi) {
         onDismissRequest = ui.onDeny,
         properties = DialogProperties(
             dismissOnClickOutside = false,
-            securePolicy = SecureFlagPolicy.SecureOn
+            securePolicy = SecureFlagPolicy.SecureOn,
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
         )
     ) {
         // The dialog is its own window. AndroidComposeView (LocalView) never consults
@@ -381,17 +395,22 @@ private fun ConsentDialog(state: ConsentState, ui: ConsentUi) {
                 ui.onArmed(true)
             }
         }
-        Surface(
-            shape = RoundedCornerShape(28.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier.widthIn(max = 560.dp)
-        ) {
-            if (!shown) {
-                Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+            Column(
+                Modifier
+                    .widthIn(max = contentWidthDp())
+                    .fillMaxWidth()
+                    .clip(SheetShape)
+                    .background(colorResource(R.color.background_secondary))
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+            ) {
+                if (!shown) {
+                    Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = colorResource(R.color.glyph_active))
+                    }
+                } else {
+                    ConsentContent(state, ui)
                 }
-            } else {
-                ConsentContent(state, ui)
             }
         }
     }
@@ -402,105 +421,192 @@ private fun ConsentDialog(state: ConsentState, ui: ConsentUi) {
 @Composable
 private fun ConsentContent(state: ConsentState, ui: ConsentUi) {
     val enabled = !state.loading
+    // Scrolls when the window is short (a phone in landscape is about 411dp tall).
     Column(
         Modifier
             .verticalScroll(rememberScrollState())
-            .padding(24.dp)
+            .padding(top = 24.dp, bottom = 16.dp)
     ) {
         ui.icon?.let {
             Image(
                 bitmap = it,
                 contentDescription = null,
-                modifier = Modifier.size(40.dp).testTag(ConnectApprovalActivity.ICON_TAG)
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .size(56.dp)
+                    .testTag(ConnectApprovalActivity.ICON_TAG)
             )
             Spacer(Modifier.height(16.dp))
         }
-        Text(state.title(), style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(16.dp))
-        Text(state.body(), style = MaterialTheme.typography.bodyMedium)
+        CenteredText(state.title(), HeadlineHeading, colorResource(R.color.text_primary))
         Spacer(Modifier.height(8.dp))
-        Text(
-            "${state.packageName} · ${state.certShort}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        CenteredText(state.body(), UxSmallTextRegular, colorResource(R.color.text_primary))
+        Spacer(Modifier.height(6.dp))
+        CenteredText("${state.packageName} · ${state.certShort}", Caption1Regular, colorResource(R.color.text_secondary))
         state.error?.let {
             Spacer(Modifier.height(8.dp))
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+            CenteredText(it, UxSmallTextRegular, colorResource(R.color.palette_system_red))
+        }
+
+        Spacer(Modifier.height(20.dp))
+        SectionLabel("Access")
+        Group(Modifier.selectableGroup()) {
+            AccessRow("Read and change", state.access == Access.READ_WRITE, enabled) { ui.onAccess(Access.READ_WRITE) }
+            RowDivider()
+            AccessRow("Read only", state.access == Access.READ_ONLY, enabled) { ui.onAccess(Access.READ_ONLY) }
         }
 
         Spacer(Modifier.height(16.dp))
-        Text("Access", style = MaterialTheme.typography.titleSmall)
-        ChoiceRow("Read and change", state.access == Access.READ_WRITE, enabled) { ui.onAccess(Access.READ_WRITE) }
-        ChoiceRow("Read only", state.access == Access.READ_ONLY, enabled) { ui.onAccess(Access.READ_ONLY) }
-
-        Spacer(Modifier.height(16.dp))
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .toggleable(state.allSpaces, enabled, Role.Switch) { ui.onAllSpaces(it) }
-                .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("All spaces", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-            Switch(checked = state.allSpaces, onCheckedChange = null, enabled = enabled)
-        }
-        if (!state.allSpaces) {
-            state.spaces.forEach { space ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .toggleable(space.id in state.selected, enabled, Role.Checkbox) { ui.onToggleSpace(space.id) }
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Checkbox(checked = space.id in state.selected, onCheckedChange = null, enabled = enabled)
-                    Spacer(Modifier.width(12.dp))
-                    Text(space.name, style = MaterialTheme.typography.bodyLarge)
+        SectionLabel("Spaces")
+        Group {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .toggleable(state.allSpaces, enabled, Role.Switch) { ui.onAllSpaces(it) }
+                    .heightIn(min = RowHeight)
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("All spaces", Modifier.weight(1f), style = BodyRegular, color = colorResource(R.color.text_primary))
+                Switch(
+                    checked = state.allSpaces,
+                    onCheckedChange = null,
+                    enabled = enabled,
+                    colors = SwitchDefaults.colors(checkedTrackColor = colorResource(R.color.color_accent_80))
+                )
+            }
+            if (!state.allSpaces) {
+                state.spaces.forEach { space ->
+                    RowDivider()
+                    val checked = space.id in state.selected
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .toggleable(checked, enabled, Role.Checkbox) { ui.onToggleSpace(space.id) }
+                            .heightIn(min = RowHeight)
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(space.name, Modifier.weight(1f), style = BodyRegular, color = colorResource(R.color.text_primary))
+                        RowIcon(if (checked) R.drawable.ic_checkbox_checked else R.drawable.ic_checkbox_default)
+                    }
                 }
             }
+        }
+        if (!state.allSpaces) {
             Spacer(Modifier.height(8.dp))
             Text(
                 ConsentState.NARROWED_NOTE,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                Modifier.padding(horizontal = 20.dp),
+                style = Caption1Regular,
+                color = colorResource(R.color.text_secondary)
             )
         }
 
-        Spacer(Modifier.height(24.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = ui.onDeny, enabled = enabled) { Text("Don't allow") }
-            Spacer(Modifier.width(8.dp))
-            Button(
-                onClick = ui.onAllow,
-                enabled = state.canAllow && ui.armed,
-                modifier = Modifier
-                    .semantics { role = Role.Button }
-                    // Sees every DOWN on Allow without consuming it; onAllow refuses a tap whose
-                    // DOWN was obscured or came before Allow was armed.
-                    .pointerInteropFilter { ev ->
-                        if (ev.actionMasked == MotionEvent.ACTION_DOWN) ui.onAllowDown(ev)
-                        false
-                    }
-            ) { Text("Allow") }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-            TextButton(onClick = ui.onManageAccess, enabled = enabled) { Text(ConnectApprovalActivity.MANAGE_ACCESS) }
-        }
+        Spacer(Modifier.height(20.dp))
+        ButtonPrimary(
+            text = "Allow",
+            onClick = ui.onAllow,
+            enabled = state.canAllow && ui.armed,
+            size = ButtonSize.Large,
+            modifier = Modifier
+                .padding(horizontal = 16.dp)
+                .fillMaxWidth()
+                .semantics { role = Role.Button }
+                // Sees every DOWN on Allow without consuming it; onAllow refuses a tap whose
+                // DOWN was obscured or came before Allow was armed.
+                .pointerInteropFilter { ev ->
+                    if (ev.actionMasked == MotionEvent.ACTION_DOWN) ui.onAllowDown(ev)
+                    false
+                }
+        )
+        Spacer(Modifier.height(8.dp))
+        ButtonSecondary(
+            text = "Don't allow",
+            onClick = ui.onDeny,
+            enabled = enabled,
+            size = ButtonSize.LargeSecondary,
+            modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth()
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            ConnectApprovalActivity.MANAGE_ACCESS,
+            Modifier
+                .align(Alignment.CenterHorizontally)
+                .clickable(enabled = enabled, role = Role.Button, onClick = ui.onManageAccess)
+                .heightIn(min = 44.dp)
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            style = Caption1Medium,
+            color = colorResource(R.color.text_primary)
+        )
     }
 }
 
+private val SheetShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+private val GroupShape = RoundedCornerShape(12.dp)
+private val RowHeight = 52.dp
+
 @Composable
-private fun ChoiceRow(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+private fun CenteredText(text: String, style: androidx.compose.ui.text.TextStyle, color: androidx.compose.ui.graphics.Color) {
+    Text(
+        text,
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        style = style,
+        color = color,
+        textAlign = TextAlign.Center
+    )
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        Modifier.padding(start = 20.dp, end = 20.dp, bottom = 6.dp),
+        style = Caption1Medium,
+        color = colorResource(R.color.text_secondary)
+    )
+}
+
+/** A bordered group of rows, as in Anytype's settings lists. */
+@Composable
+private fun Group(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier
+            .padding(horizontal = 16.dp)
+            .fillMaxWidth()
+            .clip(GroupShape)
+            .border(BorderStroke(1.dp, colorResource(R.color.shape_primary)), GroupShape),
+        content = content
+    )
+}
+
+@Composable
+private fun RowDivider() {
+    Box(
+        Modifier
+            .padding(start = 16.dp)
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(colorResource(R.color.shape_secondary))
+    )
+}
+
+@Composable
+private fun RowIcon(@DrawableRes id: Int) {
+    Image(painterResource(id), contentDescription = null, modifier = Modifier.size(24.dp))
+}
+
+@Composable
+private fun AccessRow(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
             .selectable(selected, enabled, Role.RadioButton, onClick = onClick)
-            .padding(vertical = 4.dp),
+            .heightIn(min = RowHeight)
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        RadioButton(selected = selected, onClick = null, enabled = enabled)
-        Spacer(Modifier.width(12.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge)
+        Text(label, Modifier.weight(1f), style = BodyRegular, color = colorResource(R.color.text_primary))
+        if (selected) RowIcon(R.drawable.ic_option_checked)
     }
 }
