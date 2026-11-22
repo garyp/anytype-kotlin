@@ -54,8 +54,10 @@ force the download.
 
 ### Bumping heart
 
-1. Rebase the fork's `agentbridge` branch onto the new upstream tag
-   (`git rebase --onto vX.Y.Z v0.51.6 agentbridge`). Drop the fix commit if upstream now calls
+1. Fetch the upstream tags first; a fork clone does not have them
+   (`git fetch https://github.com/anyproto/anytype-heart tag vX.Y.Z --no-tags`, and the same for
+   `v0.51.6` if it is missing). Then rebase the fork's `agentbridge` branch onto the new upstream
+   tag (`git rebase --onto vX.Y.Z v0.51.6 agentbridge`). Drop the fix commit if upstream now calls
    `api.SetMiddlewareParams(mw)` in `clientlibrary/service` (see "Dropping the fork").
 2. Tag `vX.Y.Z-agentbridge.N` and push the tag (or create a GitHub release with that tag). Wait for
    the `Build` workflow to publish the package.
@@ -109,14 +111,21 @@ fetches the toolchain in `go.mod`), a Rust toolchain and a C compiler.
    `FlowRunnerRealHeartTest` of `:agent-bridge-testapp` (`--rerun`). Without those env vars the
    test is skipped (`Assume`), so plain `testDebugUnitTest` stays green.
 
-Behaviour verified with curl against heart v0.51.6 with the fix:
+What the contract tests check, on every run:
+
+- `flowAgainstRealHeart`: the test app's `FlowRunner` (OkHttp for REST, the MCP Kotlin SDK for MCP)
+  runs its whole flow with the harness's app key and ends with `ALL OK`.
+- `keylessRestIsRejected`: `GET /v2/spaces` without a key gets 401.
+- `keylessMcpIsRejected`: `POST /mcp/small` with an MCP `initialize` and no key gets 401.
+
+Nothing else is automated. The rest below was verified once by hand, with curl against heart
+v0.51.6 with the fix, and is not rechecked:
 
 - Keyless `/v1/spaces`, `/v2/spaces`, `/mcp/small`: 401 `missing authorization header`.
 - Revoked key: 401 `{"object":"error","status":401,"code":"unauthorized","message":"invalid api key"}`.
-- Foreign `Origin`: 403 `request origin is not allowed`. The JDK `HttpURLConnection` silently drops a
-  caller-set `Origin` (restricted header), so the test uses a raw socket.
-- `changeaddr?addr=` (empty) closes the listener; reopening with `127.0.0.1:<old port>` works, so the
-  test restores the original port instead of `:0` to keep the env-provided base URL valid.
+- Foreign `Origin`: 403 `request origin is not allowed`. (The JDK `HttpURLConnection` silently drops
+  a caller-set `Origin`, a restricted header; curl sends it.)
+- `changeaddr?addr=` (empty) closes the listener; reopening with `127.0.0.1:<old port>` works.
 - /v2 returns short space ids (last 6 chars before the dot of the full id, e.g. `znefhm`); MCP
   `spaces`/`find` also use short ids but accept the full id as `space`.
 - Narrowed key: `/v1/*` 403 code `v1_not_available_for_scoped_keys`; other space 403 code
@@ -165,5 +174,6 @@ While any app is bound to the bridge service, heart listens on `127.0.0.1:<port>
 can reach that port. Without a key it gets 401/403 and the `Anytype-Version` header. Heart's keyless
 pairing challenge cannot complete because the Android app never shows the approval it needs. The
 listener closes when the last binding closes, whichever app holds it: an unapproved app that stays
-bound can keep the listener open, but it learns no key and reaches only that same 401/403 surface. Contract tests assert that keyless REST and MCP calls are
-rejected.
+bound can keep the listener open, but it learns no key and reaches only that same 401/403 surface.
+The contract tests assert that keyless REST (`GET /v2/spaces`) and MCP (`POST /mcp/small`) calls
+get 401; the `Origin` 403 was checked once by hand (above).
