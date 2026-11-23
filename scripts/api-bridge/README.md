@@ -30,7 +30,7 @@ Branch `apibridge` is upstream tag `v0.51.6` plus these commits:
 
 To publish, run the fork's `Build` workflow manually (Actions tab, `Build`, "Run workflow" on
 `apibridge`) with `platform = android` and `alpha_version = <version>`, for example
-`v0.51.6-apibridge.2`. An `android` run builds only the AAR, on `ubuntu-24.04`, in about 10
+`v0.51.6-apibridge.2`. An `android` run builds only the AAR, on `ubuntu-latest`, in about 10
 minutes, and publishes `io.anyproto:anytype-heart-android:<version>` to the fork's GitHub
 Packages, `https://maven.pkg.github.com/garyp/anytype-heart`. Pushing a `v*.*.*` tag also works,
 but it builds every platform on macOS and takes over two hours. A version can be published only
