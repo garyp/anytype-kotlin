@@ -27,7 +27,7 @@ dependencyResolutionManagement {
         mavenCentral()
         maven { url "https://jitpack.io" }
         // anytype-heart-android with the API bridge fix comes from the garyp/anytype-heart fork
-        // (branch apibridge, tags <upstream>-apibridge.N). See scripts/api-bridge/README.md.
+        // (branch apibridge, tags <upstream>-apibridge.N). See docs/api-bridge/README.md.
         maven {
             name = "HeartFork"
             url = uri("https://maven.pkg.github.com/garyp/anytype-heart")

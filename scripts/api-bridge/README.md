@@ -1,218 +1,52 @@
-# API bridge tooling
+# API bridge contract tests
 
-The app depends on `io.anyproto:anytype-heart-android:v0.51.6-apibridge.3` (`middlewareVersion`
-in `gradle/libs.versions.toml`). Upstream heart's mobile library never calls
-`api.SetMiddlewareParams`, so its JSON API answers every authenticated request with an empty 500.
-The fixed heart is built from the fork
-[garyp/anytype-heart](https://github.com/garyp/anytype-heart), branch `apibridge`. Nothing in this
-repository builds heart.
+`run-contract-tests.sh` runs the test app's flow against the real heart, built as a native Linux
+binary. The rest of the bridge's maintainer notes are in
+[docs/api-bridge/README.md](../../docs/api-bridge/README.md).
 
-## The heart fork
-
-Branch `apibridge` is upstream tag `v0.51.6` plus four commits:
-
-1. `clientlibrary: set JSON API middleware params in the mobile library`: the one-line fix in
-   `clientlibrary/service/lib.go`, the only change meant for upstream.
-2. `Bump tantivy-go to v1.0.7`, cherry-picked unchanged from upstream `develop` (`2e54309f6`):
-   Go 1.26.11, which the `Build` workflow's `setup-go` resolves, refuses v1.0.6's prebuilt
-   libraries.
-3. `ci: build and publish the Android library from this fork`: `build.gradle` publishes to
-   `https://maven.pkg.github.com/${GITHUB_REPOSITORY}`; the triggers for anyproto's other
-   repositories and the `ANYTYPE_PAT` rewrite run only where they can; manual runs take a
-   `platform` input, and `android` builds on Linux with NDK 28; the job may run 240 minutes.
-4. `android: patch modernc libc so heart runs on x86_64 emulators`: the Android build step runs
-   `scripts/android-libc/apply.sh`, which patches `modernc.org/libc` (see the x86_64 note below)
-   and adds a `go.mod` replace. Desktop and iOS builds are unchanged.
-
-`v0.51.6-apibridge.3` is built from this branch.
-
-To publish, run the fork's `Build` workflow manually (Actions tab, `Build`, "Run workflow" on
-`apibridge`) with `platform = android` and `alpha_version = <version>`, for example
-`v0.51.6-apibridge.3`. An `android` run builds only the AAR, on `ubuntu-latest`, in about 10
-minutes, and publishes `io.anyproto:anytype-heart-android:<version>` to the fork's GitHub
-Packages, `https://maven.pkg.github.com/garyp/anytype-heart`. Pushing a `v*.*.*` tag also works,
-but it builds every platform on macOS and takes over two hours. A version can be published only
-once per package; publish a new `-apibridge.N` rather than reusing one.
-
-Setup of the fork (once):
-
-- **Actions must be enabled** on the fork (GitHub disables workflows on new forks: Actions tab,
-  "I understand my workflows, go ahead and enable them").
-- **Repository secrets** (Settings, Secrets and variables, Actions):
-  - `UNSPLASH_KEY` sets `util/unsplash.DefaultToken`. Without it the Unsplash cover picker does
-    not work.
-  - `INHOUSE_KEY` sets `metrics.DefaultInHouseKey`. Without it in-house analytics stay silent.
-  - `ANYTYPE_PAT` is probably not needed (the workflow skips it when empty); add it only if the
-    build fails to fetch a private dependency.
-  Never commit the values.
-
-### Resolving the artifact
-
-`settings.gradle` has a `HeartFork` repository, `https://maven.pkg.github.com/garyp/anytype-heart`,
-restricted to the module `io.anyproto:anytype-heart-android`, ahead of the anyproto repository
-(which stays for other artifacts). It uses the same `github.properties` credentials
-(`gpr.usr`, `gpr.key`). GitHub Packages needs a token even for public packages: the
-`gpr.key` token must have `read:packages` and be able to read `garyp/anytype-heart`.
-
-History: the bridge was first named for agents, and so were the fork's branch, tags and harness;
-the first tag under that name failed the fork's `Build` on Go 1.26.11, hence commit 4 above.
-
-`mavenLocal()` stays the first repository, so a copy of the same coordinates in Maven Local wins
-over the fork's package. Delete `~/.m2/repository/io/anyproto/anytype-heart-android/<version>` to
-force the download.
-
-### Bumping heart
-
-1. Fetch the upstream tags first; a fork clone does not have them
-   (`git fetch https://github.com/anyproto/anytype-heart tag vX.Y.Z --no-tags`, and the same for
-   `v0.51.6` if it is missing). Then rebase the fork's `apibridge` branch onto the new upstream
-   tag (`git rebase --onto vX.Y.Z v0.51.6 apibridge`). Drop the fix commit if upstream now calls
-   `api.SetMiddlewareParams(mw)` in `clientlibrary/service` (see "Dropping the fork").
-2. Push the branch and run the `Build` workflow with `platform = android` and
-   `alpha_version = vX.Y.Z-apibridge.N` (see above). Tag the published commit
-   `vX.Y.Z-apibridge.N` for `run-contract-tests.sh`.
-3. Set `middlewareVersion` in `gradle/libs.versions.toml` to `vX.Y.Z-apibridge.N`, and the tag
-   that `run-contract-tests.sh` checks (`HEART_TAG`).
-4. Rerun `run-contract-tests.sh` against the new tag.
-5. Regenerate `docs/api-bridge/small-tools-manifest.json` (see
-   `docs/api-bridge/integration.md`).
-
-### Dropping the fork
-
-When upstream calls `api.SetMiddlewareParams(mw)` in `clientlibrary/service`, depend on the
-official `anytype-heart-android` artifact, delete the `HeartFork` repository from
-`settings.gradle`, and point the contract tests at an upstream checkout. The upstream issue draft is `docs/api-bridge/heart-issue-draft.md` (not filed).
-
-## Native heart harness
-
-Contract tests run against the real heart built as a native Linux binary:
-`scripts/api-bridge/harness/main.go`. It lives here rather than in heart because only these tests
-use it; the script compiles it inside the heart checkout with `go build -overlay`, as if it were
-heart's `cmd/apibridge-harness`, so it uses heart's `go.mod` unchanged and writes nothing into the
-checkout. It boots heart through the same `clientlibrary/service`
-entry points the AAR exposes, with a fresh local-only account, and prints `BASE_URL=`, `API_KEY=`,
-`APP_HASH=`, `CONTROL_URL=`, `SPACE_ID=` and `READY`, then keeps running until SIGINT/SIGTERM.
-`-root DIR` sets the data root.
-
-Control endpoints on `CONTROL_URL`:
-
-- `POST /changeaddr?addr=`
-- `POST /createapp?name=&perm=rw|r&spaces=<comma-separated full space ids, empty for all>`
-  returns `{"appKey","appHash"}`
-- `GET /listapps`, `POST /revoke?hash=`
-- `POST /createspace?name=` returns `{"spaceId"}`
-- `GET /events`: the `Account.JsonApiStatus` events seen so far
-
-## Contract tests against real heart
+## Running them
 
 ```bash
 HEART_DIR=../anytype-heart scripts/api-bridge/run-contract-tests.sh [extra gradle args]
 ```
 
-`HEART_DIR` (default `../anytype-heart`) is a checkout of the fork at tag `v0.51.6-apibridge.3`
-or on branch `apibridge`; the script refuses anything else. It needs Go (`GOTOOLCHAIN=auto`
-fetches the toolchain in `go.mod`), a Rust toolchain and a C compiler.
+`HEART_DIR` (default `../anytype-heart`) must be a checkout of the heart fork at tag `HEART_TAG`
+(set in the script) or on branch `apibridge`; the script refuses anything else. It needs Go
+(`GOTOOLCHAIN=auto` fetches the version in heart's `go.mod`), a Rust toolchain and a C compiler.
 
-1. tantivy-go: heart links `libtantivy_go.a` through cgo. The script takes the tantivy-go source
-   at the version in the fork's `go.mod` from the Go module cache (`go mod download`), copies it
-   to `build/api-bridge/tantivy-go-<version>/`, and builds the library with cargo (about 4
-   minutes, once; the result is cached there).
-2. It builds `build/api-bridge/bin/apibridge-harness` from `harness/main.go` inside `$HEART_DIR`.
-3. It starts the harness from a temp dir (the harness writes `account_stop.json` into its cwd on
-   exit), exports `ANYTYPE_HEART_BASE_URL/API_KEY/CONTROL_URL/SPACE_ID` and runs the
-   `FlowRunnerRealHeartTest` of `:api-bridge-testapp` (`--rerun`). Without those env vars the
-   test is skipped (`Assume`), so plain `testDebugUnitTest` stays green.
+The script:
 
-What the contract tests check, on every run:
+1. builds tantivy-go's static library, which heart links through cgo, from the version in heart's
+   `go.mod`, with cargo (about 4 minutes the first time; cached under `build/api-bridge/`);
+2. builds the harness (below) inside `$HEART_DIR`;
+3. starts it, exports `ANYTYPE_HEART_BASE_URL`, `_API_KEY`, `_CONTROL_URL` and `_SPACE_ID`, and
+   runs `FlowRunnerRealHeartTest` in `:api-bridge-testapp`. Without those variables the test is
+   skipped, so a plain `testDebugUnitTest` stays green.
 
-- `flowAgainstRealHeart`: the test app's `FlowRunner` (OkHttp for REST, the MCP Kotlin SDK for MCP)
-  runs its whole flow with the harness's app key and ends with `ALL OK`.
+## What they check
+
+- `flowAgainstRealHeart`: the test app's `FlowRunner` (OkHttp for REST, the Kotlin MCP SDK for
+  MCP) runs its whole flow with the harness's key: list spaces, MCP initialize and tools/list,
+  then create, find and read a page.
 - `keylessRestIsRejected`: `GET /v2/spaces` without a key gets 401.
-- `keylessMcpIsRejected`: `POST /mcp/small` with an MCP `initialize` and no key gets 401.
+- `keylessMcpIsRejected`: an MCP `initialize` on `/mcp/small` without a key gets 401.
 
-Nothing else is automated. The rest below was verified once by hand, with curl against heart
-v0.51.6 with the fix, and is not rechecked:
+## The harness
 
-- Keyless `/v1/spaces`, `/v2/spaces`, `/mcp/small`: 401 `missing authorization header`.
-- Revoked key: 401 `{"object":"error","status":401,"code":"unauthorized","message":"invalid api key"}`.
-- Foreign `Origin`: 403 `request origin is not allowed`. (The JDK `HttpURLConnection` silently drops
-  a caller-set `Origin`, a restricted header; curl sends it.)
-- `changeaddr?addr=` (empty) closes the listener; reopening with `127.0.0.1:<old port>` works.
-- /v2 returns short space ids (last 6 chars before the dot of the full id, e.g. `znefhm`); MCP
-  `spaces`/`find` also use short ids but accept the full id as `space`.
-- Narrowed key: `/v1/*` 403 code `v1_not_available_for_scoped_keys`; other space 403 code
-  `space_not_granted` (on `/v2/spaces/<short>` and `/objects`); `/v2/spaces` lists only granted spaces
-  (`has_not_granted_spaces: true`).
-- Read-only key: MCP `create` returns HTTP 200 with `result.isError=true` and text
-  "the HTTP API is a write and the key's grant is read-only..."; REST write is 403 `write_not_granted`.
-  `/v1/*` is 403 as well, even with all spaces: heart serves `/v1` only to a full-access key
-  (all spaces, read and change). Confirmed on the emulator with the test app's Probe button
-  (2026-11-22): read-only all spaces → `/v1/spaces` 403; full access → 200.
-- MCP tool results carry `structuredContent` (`create` -> `{id,type,etag}`, `find` -> `{handles:[{n,id,name,type}]}`);
-  `find` handle numbers are per MCP session, so `read` must use the same MCP session. `find` is
-  eventually consistent (full-text index), so the test polls.
-- MCP args (from `tools/list`): create{space,type,name,markdown,properties}, find{space,query,type,filter,limit},
-  read{object,space,mode}, describe{space,type,...}, set_properties{object,...}, add_blocks{object,markdown,after,under,space},
-  edit_text{object,find,replace,block,space}.
+`harness/main.go` boots heart through the same `clientlibrary/service` entry points the Android
+library exposes, with a fresh local-only account, opens the local API on loopback and creates a
+key. It prints `BASE_URL=`, `API_KEY=`, `APP_HASH=`, `CONTROL_URL=`, `SPACE_ID=` and `READY`, and
+runs until SIGINT or SIGTERM (`-root DIR` sets the data root).
 
-## Building and testing the app
+It lives here rather than in heart because only these tests use it. The script compiles it inside
+the heart checkout with `go build -overlay`, as if it were heart's `cmd/apibridge-harness`, so it
+uses heart's `go.mod` unchanged and writes nothing into the checkout.
 
-Gradle needs JDK 17 and, in this environment, `--no-configuration-cache`:
+Control endpoints on `CONTROL_URL`, each returning heart's response as JSON:
 
-```bash
-export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANDROID_HOME=/opt/android-sdk
-G="./gradlew --no-configuration-cache"
-$G :app:assembleDebug :api-bridge-testapp:assembleDebug
-HEART_DIR=../anytype-heart scripts/api-bridge/run-contract-tests.sh
-```
-
-On an emulator or a phone (Android 15+). Stock heart cannot run on x86_64 emulators: its pure-Go
-SQLite (`modernc.org/libc`, generated musl in `ccgo_linux_amd64.go`) uses the legacy x86_64
-syscalls `lstat`, `access`, `unlink`, `mkdir`, `rmdir` and `rename`, which Android's app seccomp
-filter blocks on x86_64 (since Android 8). The official 0.50.4 release is killed with SIGSYS when it
-opens its database; with the app's SIGSYS-ignoring handler, debug builds fail with "unable to open
-database file". arm64 has only the `*at` forms of these calls and is not affected. The fork's
-Android build patches libc to use the `*at` forms (commit 6 above), so its AAR also works on x86_64
-emulators. Upstream: https://gitlab.com/cznic/libc/-/issues/41 (closed without a fix; still
-present in libc v1.82.12).
-
-```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk        # io.anytype.app.dev
-adb install -r api-bridge-testapp/build/outputs/apk/debug/*.apk
-$G :api-bridge-testapp:connectedDebugAndroidTest
-```
-
-The test app can pin the Anytype build's signing certificate (optional):
-`adb shell am start -n io.anytype.apibridge.testapp/.MainActivity --es pinned_cert <sha-256 hex>`
-(get the digest with `apksigner verify --print-certs app-debug.apk`). It then lists and binds only
-builds signed with that certificate.
-
-Log in to a (local-only) account in Anytype first. The instrumented test drives the approval screen
-and a read/write flow through the bridge. The instrumented test has been compiled but not run. The
-same flow was run by hand from the test app's buttons on a run.cloud x86_64 Android 16 emulator with
-heart `v0.51.6-apibridge.2` (2026-11-22): approve, connect, `/v2/spaces`, MCP initialize, tools/list,
-create, find and read a page all passed ("ALL OK").
-
-## Accepted loopback exposure
-
-While any app is bound to the bridge service, heart listens on `127.0.0.1:<port>`. Any local app
-can reach that port. Without a key it gets 401/403 and the `Anytype-Version` header. Heart's keyless
-pairing challenge cannot complete because the Android app never shows the approval it needs. The
-listener closes when the last binding closes, whichever app holds it: an unapproved app that stays
-bound can keep the listener open, but it learns no key and reaches only that same 401/403 surface.
-The contract tests assert that keyless REST (`GET /v2/spaces`) and MCP (`POST /mcp/small`) calls
-get 401; the `Origin` 403 was checked once by hand (above).
-
-## Publishing the client library
-
-`:api-bridge-client` is published as `io.anytype.apibridge:api-bridge-client:<version>` to the
-GitHub Packages registry of `garyp/anytype-kotlin`. `<version>` is the app's version from
-`app/gradle.properties` (`0.50.4` today), so the library needs no version bump of its own.
-
-Push a tag `api-bridge-client-v<version>` (for example `api-bridge-client-v0.50.4`), and
-`.github/workflows/publish-api-bridge-client.yml` runs the client's unit tests and publishes it.
-The job fails if the tag doesn't match the app's version (`./gradlew -q
-:api-bridge-client:printApiBridgeClientVersion` prints it). A version can be published only once:
-to publish the client again before the app's version changes, add `version.versionPostfix=<n>` to
-`app/gradle.properties` (version `<version>-<n>`), as for an app build. To check the artifact
-locally: `./gradlew :api-bridge-client:publishReleasePublicationToMavenLocal`.
+- `POST /changeaddr?addr=`
+- `POST /createapp?name=&perm=rw|r&spaces=<comma-separated space ids, empty for all>` returns
+  `{"appKey","appHash"}`
+- `GET /listapps`, `POST /revoke?hash=`
+- `POST /createspace?name=` returns `{"spaceId"}`
+- `GET /events`: the `Account.JsonApiStatus` events seen so far
