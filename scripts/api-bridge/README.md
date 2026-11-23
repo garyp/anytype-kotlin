@@ -12,8 +12,8 @@ repository builds heart.
 Branch `apibridge` is upstream tag `v0.51.6` plus these commits:
 
 1. `clientlibrary: set JSON API middleware params in the mobile library` (a25d5c3): the one-line
-   fix in `clientlibrary/service/lib.go` and the regression test
-   `TestMobileLibrarySetsApiMiddlewareParams` in `clientlibrary/service/lib_test.go`.
+   fix in `clientlibrary/service/lib.go`. (It first came with a regression test and a test-only
+   accessor in `core/api`; a later commit dropped both to keep the upstream change small.)
 2. `ci: publish to the fork's own package registry ...`: `build.gradle` publishes to
    `https://maven.pkg.github.com/${GITHUB_REPOSITORY}`, the `anytype-suite` and `anytype-cli`
    triggers run only for `anyproto`, and the `ANYTYPE_PAT` rewrite runs only when that secret is

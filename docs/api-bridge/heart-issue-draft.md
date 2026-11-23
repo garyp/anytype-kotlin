@@ -56,18 +56,8 @@ The fork carries this fix as commit
 [a25d5c3](https://github.com/garyp/anytype-heart/commit/a25d5c3c2933db68e2ad4cc15332932e3b3a5903)
 ("clientlibrary: set JSON API middleware params in the mobile library") on branch `apibridge`
 of [garyp/anytype-heart](https://github.com/garyp/anytype-heart/tree/apibridge) (tag
-`v0.51.6-apibridge.2`). Besides the call it adds `api.MiddlewareParamsSet()` to
-`core/api/service.go` and the regression test `TestMobileLibrarySetsApiMiddlewareParams` in
-`clientlibrary/service/lib_test.go`, which fails when the mobile library's `init()` does not call
-`api.SetMiddlewareParams`. The test links heart, so cgo needs the host's `libtantivy_go.a` (build
-it from the tantivy-go version in `go.mod`, as `scripts/api-bridge/run-contract-tests.sh` in
-anytype-kotlin does) and the warning flags that script sets:
-
-```bash
-export CGO_ENABLED=1 CGO_LDFLAGS="-L<dir containing libtantivy_go.a>"
-export CGO_CFLAGS="-Wno-deprecated-non-prototype -Wno-unknown-warning-option -Wno-deprecated-declarations -Wno-xor-used-as-pow -Wno-single-bit-bitfield-constant-conversion"
-go test -tags "nosigar nowatchdog" -run TestMobileLibrarySetsApiMiddlewareParams ./clientlibrary/service
-```
+`v0.51.6-apibridge.2`); a later commit on the branch dropped the regression test that first came
+with it, so the fix is the call alone.
 
 ## Reproduction
 
@@ -94,5 +84,4 @@ With the fix: 200. Without: 500.
 ## Impact
 
 Nothing built on the mobile library can use the JSON API or MCP, even though the listener can be
-started. A regression test in the mobile `service` package catches it; the fork's
-`TestMobileLibrarySetsApiMiddlewareParams` asserts the wiring.
+started.
