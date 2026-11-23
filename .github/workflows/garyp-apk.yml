@@ -91,7 +91,7 @@ jobs:
           # Fail here, not 20 minutes into the build, if the token can't read heart.
           HEART=$(sed -n -E 's/^middlewareVersion = "(.+)"$/\1/p' gradle/libs.versions.toml)
           POM="https://maven.pkg.github.com/garyp/anytype-heart/io/anyproto/anytype-heart-android/${HEART}/anytype-heart-android-${HEART}.pom"
-          STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -u "${ACTOR}:${TOKEN}" "$POM")
+          STATUS=$(curl -sSL -o /dev/null -w '%{http_code}' -u "${ACTOR}:${TOKEN}" "$POM")
           echo "Heart ${HEART}: HTTP ${STATUS}"
           if [[ "$STATUS" != 200 ]]; then
             echo "::error::The workflow token can't read heart ${HEART} from garyp/anytype-heart (HTTP ${STATUS})."
