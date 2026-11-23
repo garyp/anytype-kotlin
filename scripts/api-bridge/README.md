@@ -9,24 +9,22 @@ repository builds heart.
 
 ## The heart fork
 
-Branch `apibridge` is upstream tag `v0.51.6` plus these commits:
+Branch `apibridge` is upstream tag `v0.51.6` plus four commits:
 
-1. `clientlibrary: set JSON API middleware params in the mobile library` (a25d5c3): the one-line
-   fix in `clientlibrary/service/lib.go`. (It first came with a regression test and a test-only
-   accessor in `core/api`; a later commit dropped both to keep the upstream change small.)
-2. `ci: publish to the fork's own package registry ...`: `build.gradle` publishes to
-   `https://maven.pkg.github.com/${GITHUB_REPOSITORY}`, the `anytype-suite` and `anytype-cli`
-   triggers run only for `anyproto`, and the `ANYTYPE_PAT` rewrite runs only when that secret is
-   set. The rest of upstream `build.yml` is unchanged.
-3. `cmd/apibridge-harness`: the native Linux harness used by the contract tests (below); a later
-   commit gives it its current name.
-4. `Bump tantivy-go to v1.0.7` (cherry-picked from upstream `develop`, `2e54309f6`): Go 1.26.11,
-   which the `Build` workflow's `setup-go` resolves, refuses v1.0.6's prebuilt libraries.
-5. CI-only commits: a 240-minute job timeout, a `platform` input for manual runs, and NDK 28 on
-   the Linux runner (see below).
-6. `android: patch modernc libc so heart runs on x86_64 emulators` (bf95499c5): the Android build
-   step runs `scripts/android-libc/apply.sh`, which patches `modernc.org/libc` (see the x86_64
-   note below) and adds a `go.mod` replace. Desktop and iOS builds are unchanged.
+1. `clientlibrary: set JSON API middleware params in the mobile library`: the one-line fix in
+   `clientlibrary/service/lib.go`, the only change meant for upstream.
+2. `Bump tantivy-go to v1.0.7`, cherry-picked unchanged from upstream `develop` (`2e54309f6`):
+   Go 1.26.11, which the `Build` workflow's `setup-go` resolves, refuses v1.0.6's prebuilt
+   libraries.
+3. `ci: build and publish the Android library from this fork`: `build.gradle` publishes to
+   `https://maven.pkg.github.com/${GITHUB_REPOSITORY}`; the triggers for anyproto's other
+   repositories and the `ANYTYPE_PAT` rewrite run only where they can; manual runs take a
+   `platform` input, and `android` builds on Linux with NDK 28; the job may run 240 minutes.
+4. `android: patch modernc libc so heart runs on x86_64 emulators`: the Android build step runs
+   `scripts/android-libc/apply.sh`, which patches `modernc.org/libc` (see the x86_64 note below)
+   and adds a `go.mod` replace. Desktop and iOS builds are unchanged.
+
+The published `v0.51.6-apibridge.2` was built from the same library code.
 
 To publish, run the fork's `Build` workflow manually (Actions tab, `Build`, "Run workflow" on
 `apibridge`) with `platform = android` and `alpha_version = <version>`, for example
@@ -83,13 +81,15 @@ force the download.
 
 When upstream calls `api.SetMiddlewareParams(mw)` in `clientlibrary/service`, depend on the
 official `anytype-heart-android` artifact, delete the `HeartFork` repository from
-`settings.gradle`, and build the harness from a checkout that has `cmd/apibridge-harness` on top
-of upstream. The upstream issue draft is `docs/api-bridge/heart-issue-draft.md` (not filed).
+`settings.gradle`, and point the contract tests at an upstream checkout. The upstream issue draft is `docs/api-bridge/heart-issue-draft.md` (not filed).
 
 ## Native heart harness
 
 Contract tests run against the real heart built as a native Linux binary:
-`cmd/apibridge-harness` in the fork. It boots heart through the same `clientlibrary/service`
+`scripts/api-bridge/harness/main.go`. It lives here rather than in heart because only these tests
+use it; the script compiles it inside the heart checkout with `go build -overlay`, as if it were
+heart's `cmd/apibridge-harness`, so it uses heart's `go.mod` unchanged and writes nothing into the
+checkout. It boots heart through the same `clientlibrary/service`
 entry points the AAR exposes, with a fresh local-only account, and prints `BASE_URL=`, `API_KEY=`,
 `APP_HASH=`, `CONTROL_URL=`, `SPACE_ID=` and `READY`, then keeps running until SIGINT/SIGTERM.
 `-root DIR` sets the data root.
@@ -117,7 +117,7 @@ fetches the toolchain in `go.mod`), a Rust toolchain and a C compiler.
    at the version in the fork's `go.mod` from the Go module cache (`go mod download`), copies it
    to `build/api-bridge/tantivy-go-<version>/`, and builds the library with cargo (about 4
    minutes, once; the result is cached there).
-2. It builds `build/api-bridge/bin/apibridge-harness` from `$HEART_DIR`.
+2. It builds `build/api-bridge/bin/apibridge-harness` from `harness/main.go` inside `$HEART_DIR`.
 3. It starts the harness from a temp dir (the harness writes `account_stop.json` into its cwd on
    exit), exports `ANYTYPE_HEART_BASE_URL/API_KEY/CONTROL_URL/SPACE_ID` and runs the
    `FlowRunnerRealHeartTest` of `:api-bridge-testapp` (`--rerun`). Without those env vars the

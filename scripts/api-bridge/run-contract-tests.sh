@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds the native heart harness from a checkout of the garyp/anytype-heart fork
-# (cmd/apibridge-harness), starts it, exports ANYTYPE_HEART_* and runs the gated real-heart test
+# Builds the native heart harness (harness/main.go) inside a checkout of the
+# garyp/anytype-heart fork, starts it, exports ANYTYPE_HEART_* and runs the gated real-heart test
 # of the test app (FlowRunnerRealHeartTest).
 #
 # Usage: [HEART_DIR=../anytype-heart] run-contract-tests.sh [extra gradle args]
@@ -22,8 +22,8 @@ export PATH="$HOME/.cargo/bin:$PATH" GOTOOLCHAIN=auto CGO_ENABLED=1
 G="${G:-$REPO/gradlew}"
 
 # --- the fork checkout -------------------------------------------------------------------------
-[ -f "$HEART_DIR/cmd/apibridge-harness/main.go" ] || {
-  echo "HEART_DIR=$HEART_DIR has no cmd/apibridge-harness: clone github.com/garyp/anytype-heart" \
+grep -q 'api.SetMiddlewareParams(mw)' "$HEART_DIR/clientlibrary/service/lib.go" 2>/dev/null || {
+  echo "HEART_DIR=$HEART_DIR lacks the JSON API middleware fix: clone github.com/garyp/anytype-heart" \
        "and check out $HEART_TAG (or branch $HEART_BRANCH)" >&2; exit 1; }
 HEAD_SHA="$(git -C "$HEART_DIR" rev-parse HEAD)"
 TAG_SHA="$(git -C "$HEART_DIR" rev-parse -q --verify "refs/tags/$HEART_TAG^{commit}" || true)"
@@ -56,8 +56,12 @@ export CGO_CFLAGS="-Wno-deprecated-non-prototype -Wno-unknown-warning-option -Wn
 export CGO_LDFLAGS="-L$LIBDIR"
 mkdir -p "$OUT/bin"
 BIN="$OUT/bin/apibridge-harness"
-echo "building $BIN from $HEART_DIR ($HEAD_SHA)" >&2
-(cd "$HEART_DIR" && go build -tags "nosigar nowatchdog" -o "$BIN" ./cmd/apibridge-harness)
+echo "building $BIN in $HEART_DIR ($HEAD_SHA)" >&2
+# The harness lives here, not in heart: the overlay compiles it as if it were heart's
+# cmd/apibridge-harness, with heart's go.mod and replaces, without writing into the checkout.
+OVERLAY="$OUT/harness-overlay.json"
+printf '{"Replace":{"%s":"%s"}}\n' "$HEART_DIR/cmd/apibridge-harness/main.go" "$HERE/harness/main.go" >"$OVERLAY"
+(cd "$HEART_DIR" && go build -overlay "$OVERLAY" -tags "nosigar nowatchdog" -o "$BIN" ./cmd/apibridge-harness)
 
 # The harness writes account_stop.json into its cwd on exit: run it from a throwaway dir.
 WORK="$(mktemp -d)"

@@ -53,30 +53,29 @@ One call in `clientlibrary/service/lib.go`, inside `init()`, after `mw` is creat
 ```
 
 The fork carries this fix as commit
-[a25d5c3](https://github.com/garyp/anytype-heart/commit/a25d5c3c2933db68e2ad4cc15332932e3b3a5903)
+[d510a1a](https://github.com/garyp/anytype-heart/commit/d510a1a956c4ac8523b3904d47d697acf6a1bcb3)
 ("clientlibrary: set JSON API middleware params in the mobile library") on branch `apibridge`
-of [garyp/anytype-heart](https://github.com/garyp/anytype-heart/tree/apibridge) (tag
-`v0.51.6-apibridge.2`); a later commit on the branch dropped the regression test that first came
-with it, so the fix is the call alone.
+of [garyp/anytype-heart](https://github.com/garyp/anytype-heart/tree/apibridge).
 
 ## Reproduction
 
-The fork's branch also has a native Linux harness, `cmd/apibridge-harness`. It boots heart
+anytype-kotlin has a native Linux harness, `scripts/api-bridge/harness/main.go`. It boots heart
 through the same `clientlibrary/service` entry points gomobile exposes, with a fresh local-only
-account, starts the JSON API on loopback and creates an app key. It prints `BASE_URL=` and
-`API_KEY=`. It needs `libtantivy_go.a` for the host in `CGO_LDFLAGS` (see
-`scripts/api-bridge/run-contract-tests.sh` in anytype-kotlin for the full recipe).
+account, starts the JSON API on loopback and creates an app key, then prints `BASE_URL=` and
+`API_KEY=`. It is built inside a heart checkout with `go build -overlay`, and needs
+`libtantivy_go.a` for the host in `CGO_LDFLAGS` (see `scripts/api-bridge/run-contract-tests.sh`
+for the full recipe).
 
 ```bash
-git checkout apibridge
-go build -tags "nosigar nowatchdog" -o harness ./cmd/apibridge-harness
+# in a heart checkout; overlay.json maps cmd/apibridge-harness/main.go to the harness file
+go build -overlay overlay.json -tags "nosigar nowatchdog" -o harness ./cmd/apibridge-harness
 (cd "$(mktemp -d)" && /path/to/harness)                             # prints BASE_URL= and API_KEY=
-curl -i -H "Authorization: Bearer $API_KEY" "$BASE_URL/v2/spaces"   # HTTP 200, the spaces
-
-git revert --no-commit a25d5c3                                      # without the fix
-go build -tags "nosigar nowatchdog" -o harness ./cmd/apibridge-harness
-(cd "$(mktemp -d)" && /path/to/harness)
 curl -i -H "Authorization: Bearer $API_KEY" "$BASE_URL/v2/spaces"   # HTTP 500, empty body
+
+git cherry-pick d510a1a                                             # with the fix
+go build -overlay overlay.json -tags "nosigar nowatchdog" -o harness ./cmd/apibridge-harness
+(cd "$(mktemp -d)" && /path/to/harness)
+curl -i -H "Authorization: Bearer $API_KEY" "$BASE_URL/v2/spaces"   # HTTP 200, the spaces
 ```
 
 With the fix: 200. Without: 500.
