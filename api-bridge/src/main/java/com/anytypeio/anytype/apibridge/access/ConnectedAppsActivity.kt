@@ -3,9 +3,11 @@ package com.anytypeio.anytype.apibridge.access
 import android.os.Bundle
 import android.util.Log
 import android.view.View
-import androidx.activity.ComponentActivity
+import android.view.WindowManager
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.RequiresApi
+import androidx.annotation.StringRes
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -13,19 +15,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
@@ -33,39 +35,42 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
 import com.anytypeio.anytype.apibridge.Access
-import com.anytypeio.anytype.apibridge.AppApprovals
 import com.anytypeio.anytype.apibridge.ApiBridge
+import com.anytypeio.anytype.apibridge.AppApprovals
 import com.anytypeio.anytype.apibridge.Approval
-import com.anytypeio.anytype.apibridge.KeyNames
+import com.anytypeio.anytype.apibridge.appIcon
 import com.anytypeio.anytype.apibridge.consent.ConsentState
+import com.anytypeio.anytype.apibridge.safeAppLabel
 import com.anytypeio.anytype.core_ui.R
 import com.anytypeio.anytype.core_ui.extensions.contentWidthDp
 import com.anytypeio.anytype.core_ui.foundation.EmptyState
 import com.anytypeio.anytype.core_ui.foundation.Section
 import com.anytypeio.anytype.core_ui.foundation.noRippleThrottledClickable
 import com.anytypeio.anytype.core_ui.views.ButtonSize
-import com.anytypeio.anytype.core_ui.views.ButtonWarning
+import com.anytypeio.anytype.core_ui.views.ButtonWarningLoading
 import com.anytypeio.anytype.core_ui.views.Caption1Regular
 import com.anytypeio.anytype.core_ui.views.PreviewTitle1Regular
 import com.anytypeio.anytype.core_ui.views.Title1
+import com.anytypeio.anytype.localization.R as Loc
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -77,25 +82,31 @@ import kotlinx.coroutines.withContext
  * queued and the next connect for that account sweeps the keys. When a key revoke fails, the
  * screen says so and the bridge retries in the background while the account runs.
  *
+ * A revoke completes even when the user leaves the screen before it is done.
+ *
  * [AppApprovals] commits to disk under a process-wide lock and the gateway makes blocking
  * calls, so all of it, and the package lookups, run on [Dispatchers.IO].
+ *
+ * An AppCompatActivity, so it follows Anytype's own Light/Dark setting.
  */
 @RequiresApi(35)
-class ConnectedAppsActivity : ComponentActivity() {
+class ConnectedAppsActivity : AppCompatActivity() {
 
-    private class Row(
+    private class AppRow(
         val approval: Approval,
         val label: String,
         val icon: ImageBitmap?
     )
 
-    private class UiState(
+    private data class UiState(
         val loading: Boolean = true,
-        val error: String? = null,
-        val rows: List<Row> = emptyList(),
+        /** Why the list is unavailable; null when it loaded. */
+        @StringRes val error: Int? = null,
+        val rows: List<AppRow> = emptyList(),
+        /** Packages whose revoke is running. */
         val busy: Set<String> = emptySet(),
-        /** Shown above the list, e.g. when a revoke has not completed yet. */
-        val notice: String? = null
+        /** The latest revoke that finished left a key behind, which the bridge keeps retrying. */
+        val revokeIncomplete: Boolean = false
     )
 
     private var ui by mutableStateOf(UiState())
@@ -108,7 +119,7 @@ class ConnectedAppsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // No other app may draw over a screen whose buttons remove access, and no screenshots.
         window.setHideOverlayWindows(true)
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         approvals = AppApprovals(applicationContext)
         setContentView(ComposeView(this).apply {
             filterTouchesWhenObscured = true
@@ -123,7 +134,7 @@ class ConnectedAppsActivity : ComponentActivity() {
     private suspend fun load() {
         val launcher = ApiBridge.launcher
         if (launcher == null || ApiBridge.gateway == null) {
-            ui = UiState(loading = false, error = NOT_READY)
+            ui = ui.copy(loading = false, error = Loc.string.api_bridge_not_ready)
             return
         }
         val account = try {
@@ -131,7 +142,7 @@ class ConnectedAppsActivity : ComponentActivity() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            ui = UiState(loading = false, error = SIGN_IN_FIRST)
+            ui = ui.copy(loading = false, error = Loc.string.api_bridge_sign_in_first)
             return
         }
         accountId = account.id
@@ -143,17 +154,17 @@ class ConnectedAppsActivity : ComponentActivity() {
         val px = (ICON_DP * resources.displayMetrics.density).toInt()
         val rows = withContext(Dispatchers.IO) {
             approvals.all().filter { it.accountId == acc }.sortedBy { it.packageName }.map {
-                Row(it, labelOf(it.packageName), iconOf(it.packageName, px))
+                AppRow(it, packageManager.safeAppLabel(it.packageName), packageManager.appIcon(it.packageName, px))
             }
         }
-        ui = UiState(loading = false, rows = rows, busy = ui.busy, notice = ui.notice)
+        ui = ui.copy(loading = false, rows = rows)
     }
 
-    private fun onRevoke(row: Row) {
+    private fun onRevoke(row: AppRow) {
         val acc = accountId ?: return
         val pkg = row.approval.packageName
         if (pkg in ui.busy) return
-        ui = UiState(loading = false, rows = ui.rows, busy = ui.busy + pkg, notice = ui.notice)
+        ui = ui.copy(busy = ui.busy + pkg)
         lifecycleScope.launch {
             val complete = try {
                 revoke(acc, pkg)
@@ -163,12 +174,7 @@ class ConnectedAppsActivity : ComponentActivity() {
                 Log.w(TAG, "revoke of $pkg failed", e)
                 false
             }
-            ui = UiState(
-                loading = false,
-                rows = ui.rows,
-                busy = ui.busy - pkg,
-                notice = if (complete) ui.notice else REVOKE_RETRYING
-            )
+            ui = ui.copy(busy = ui.busy - pkg, revokeIncomplete = !complete)
             refresh()
         }
     }
@@ -177,33 +183,23 @@ class ConnectedAppsActivity : ComponentActivity() {
      * Goes through the [com.anytypeio.anytype.apibridge.BridgeController], which serializes
      * it with connects: a connect already past its approval check cannot mint a key after the
      * revoke. Without a controller (bridge not installed) only the approval is removed and the
-     * pending revoke stays queued. Returns false when a key revoke failed and is being retried.
+     * pending revoke stays queued. Either way it is not cancellable: leaving the screen (Back,
+     * a rotation) right after the tap must not skip it. Returns false when a key revoke failed
+     * and is being retried.
      */
-    private suspend fun revoke(accountId: String, pkg: String): Boolean {
+    private suspend fun revoke(accountId: String, pkg: String): Boolean = withContext(NonCancellable) {
         val controller = ApiBridge.controller(applicationContext)
         if (controller == null) {
             withContext(Dispatchers.IO) { approvals.revoke(accountId, pkg) }
-            return true
+            true
+        } else {
+            controller.revokeApp(accountId, pkg)
         }
-        return controller.revokeApp(accountId, pkg)
-    }
-
-    private fun iconOf(pkg: String, px: Int): ImageBitmap? = try {
-        packageManager.getApplicationIcon(pkg).toBitmap(px, px).asImageBitmap()
-    } catch (e: Exception) {
-        null
-    }
-
-    private fun labelOf(pkg: String): String = try {
-        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
-            .ifBlank { pkg }
-    } catch (e: Exception) {
-        pkg
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun AccessContent(state: UiState, onRevoke: (Row) -> Unit, onBack: () -> Unit) {
+    private fun AccessContent(state: UiState, onRevoke: (AppRow) -> Unit, onBack: () -> Unit) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             containerColor = colorResource(id = R.color.background_primary),
@@ -224,11 +220,11 @@ class ConnectedAppsActivity : ComponentActivity() {
                     ) {
                         Image(
                             painter = painterResource(R.drawable.ic_default_top_back),
-                            contentDescription = stringResource(R.string.content_desc_back_button)
+                            contentDescription = stringResource(Loc.string.content_desc_back_button)
                         )
                     }
                     Text(
-                        "Connected apps",
+                        stringResource(Loc.string.api_bridge_connected_apps),
                         Modifier.align(Alignment.Center).padding(horizontal = 56.dp),
                         style = Title1,
                         color = colorResource(id = R.color.text_primary),
@@ -242,9 +238,9 @@ class ConnectedAppsActivity : ComponentActivity() {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Above the list, so it stays visible when revoking the last app empties it.
-                state.notice?.let { notice ->
+                if (state.revokeIncomplete) {
                     Text(
-                        notice,
+                        stringResource(Loc.string.api_bridge_revoke_retrying),
                         Modifier.widthIn(max = contentWidthDp()).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                         style = Caption1Regular,
                         color = colorResource(R.color.palette_system_red)
@@ -257,14 +253,14 @@ class ConnectedAppsActivity : ComponentActivity() {
                     )
                     state.error != null -> EmptyState(
                         modifier = Modifier.padding(top = 48.dp).widthIn(max = contentWidthDp()),
-                        title = "Connected apps are unavailable",
-                        description = state.error,
+                        title = stringResource(Loc.string.api_bridge_unavailable),
+                        description = stringResource(state.error),
                         icon = R.drawable.ic_popup_alert_56
                     )
                     state.rows.isEmpty() -> EmptyState(
                         modifier = Modifier.padding(top = 48.dp).widthIn(max = contentWidthDp()),
-                        title = "No connected apps",
-                        description = EMPTY,
+                        title = stringResource(Loc.string.api_bridge_empty_title),
+                        description = stringResource(Loc.string.api_bridge_empty_description),
                         icon = R.drawable.ic_popup_lock_56
                     )
                     else -> LazyColumn(
@@ -273,14 +269,16 @@ class ConnectedAppsActivity : ComponentActivity() {
                             .fillMaxSize()
                             .padding(horizontal = 16.dp)
                     ) {
-                        item { Section(title = "Apps with access", textPaddingStart = 0.dp) }
+                        item {
+                            Section(title = stringResource(Loc.string.api_bridge_apps_with_access), textPaddingStart = 0.dp)
+                        }
                         items(state.rows, key = { it.approval.packageName }) { row ->
-                            ApprovalCard(row, enabled = row.approval.packageName !in state.busy, onRevoke)
+                            ApprovalCard(row, busy = row.approval.packageName in state.busy, onRevoke)
                             Spacer(Modifier.height(8.dp))
                         }
                         item {
                             Text(
-                                FOOTER,
+                                stringResource(Loc.string.api_bridge_footer),
                                 Modifier.padding(top = 8.dp, bottom = 24.dp),
                                 style = Caption1Regular,
                                 color = colorResource(R.color.text_secondary)
@@ -294,7 +292,7 @@ class ConnectedAppsActivity : ComponentActivity() {
 
     /** One app, drawn as a bordered settings item like the ones in space settings. */
     @Composable
-    private fun ApprovalCard(row: Row, enabled: Boolean, onRevoke: (Row) -> Unit) {
+    private fun ApprovalCard(row: AppRow, busy: Boolean, onRevoke: (AppRow) -> Unit) {
         val a = row.approval
         Row(
             Modifier
@@ -314,7 +312,7 @@ class ConnectedAppsActivity : ComponentActivity() {
             Column(Modifier.weight(1f)) {
                 Text(row.label, style = PreviewTitle1Regular, color = colorResource(R.color.text_primary))
                 Text(
-                    "${accessText(a.access)} · ${grantText(a)} · ${dateText(a.approvedAt)}",
+                    summary(a),
                     style = Caption1Regular,
                     color = colorResource(R.color.text_secondary)
                 )
@@ -325,35 +323,37 @@ class ConnectedAppsActivity : ComponentActivity() {
                 )
             }
             Spacer(Modifier.width(8.dp))
-            ButtonWarning(
-                text = "Revoke",
+            ButtonWarningLoading(
+                text = stringResource(Loc.string.api_bridge_revoke),
                 onClick = { onRevoke(row) },
                 size = ButtonSize.Small,
-                isEnabled = enabled,
-                modifier = Modifier.testTag(revokeTag(a.packageName))
+                loading = busy,
+                modifierButton = Modifier.testTag(revokeTag(a.packageName))
             )
         }
     }
 
+    /** "Read and change · All spaces · 14 Nov 2026". */
+    @Composable
+    private fun summary(a: Approval): String {
+        val access = stringResource(
+            if (a.access == Access.READ_WRITE) Loc.string.api_bridge_access_read_write
+            else Loc.string.api_bridge_access_read_only
+        )
+        val grant = if (a.grant.allSpaces) {
+            stringResource(Loc.string.api_bridge_all_spaces)
+        } else {
+            val n = a.grant.spaceIds.size
+            pluralStringResource(Loc.plurals.api_bridge_space_count, n, n)
+        }
+        val date = remember(a.approvedAt) { DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(a.approvedAt)) }
+        return stringResource(Loc.string.api_bridge_app_summary, access, grant, date)
+    }
+
     companion object {
-        internal const val EMPTY = "When you allow an app to access Anytype, it appears here and you can revoke it at any time."
-        internal const val FOOTER =
-            "Connected apps can use Anytype's local API while they are connected. Revoking an app removes its access."
-        internal const val SIGN_IN_FIRST = "Sign in to Anytype first"
-        internal const val NOT_READY = "Anytype isn't ready. Try again in a moment."
-        internal const val REVOKE_RETRYING =
-            "Couldn't fully revoke access yet. Anytype keeps retrying while it runs."
         private const val TAG = "ConnectedApps"
         private const val ICON_DP = 40
 
         internal fun revokeTag(pkg: String) = "revoke:$pkg"
-
-        private fun accessText(a: Access) = if (a == Access.READ_WRITE) "Read and change" else "Read only"
-
-        private fun grantText(a: Approval) =
-            if (a.grant.allSpaces) "All spaces"
-            else a.grant.spaceIds.size.let { if (it == 1) "1 space" else "$it spaces" }
-
-        private fun dateText(ms: Long) = DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(ms))
     }
 }

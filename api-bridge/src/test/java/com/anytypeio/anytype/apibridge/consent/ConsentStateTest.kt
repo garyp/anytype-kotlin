@@ -12,11 +12,10 @@ import kotlin.test.assertTrue
 class ConsentStateTest {
 
     private val loaded = ConsentState(
-        loading = false,
-        accountName = "Alice",
         appLabel = "Client",
         packageName = "com.client",
         certShort = "aabb ccdd eeff 0011",
+        accountName = "Alice",
         spaces = listOf(SpaceRef("s1", "Work"), SpaceRef("s2", "Home"), SpaceRef("s3", "Club"))
     )
 
@@ -36,17 +35,6 @@ class ConsentStateTest {
         // Selecting then unselecting leaves it disabled again.
         val again = s.toggleSpace("s1").toggleSpace("s1")
         assertFalse(again.canAllow)
-    }
-
-    @Test
-    fun allowDisabledWhileLoading() {
-        assertFalse(loaded.copy(loading = true).canAllow)
-        assertFalse(ConsentState().canAllow)
-    }
-
-    @Test
-    fun allowDisabledOnError() {
-        assertFalse(loaded.copy(error = "Sign in to Anytype first").canAllow)
     }
 
     @Test
@@ -75,55 +63,36 @@ class ConsentStateTest {
     }
 
     @Test
-    fun copy() {
-        assertEquals("Allow Client to access Anytype?", loaded.title())
-        assertEquals(
-            "Client will be able to read and change all objects in all your spaces of Alice while it is connected.",
-            loaded.body()
-        )
-        val narrow = loaded.setAllSpaces(false).toggleSpace("s1").toggleSpace("s2").setAccess(Access.READ_ONLY)
-        assertEquals(
-            "Client will be able to read all objects in 2 spaces of Alice while it is connected.",
-            narrow.body()
-        )
-        assertEquals(
-            "Client will be able to read all objects in 1 space of Alice while it is connected.",
-            narrow.toggleSpace("s2").body()
-        )
-        // No space ticked yet: ask for a choice instead of describing access to "0 spaces".
-        assertEquals(
-            "Choose the spaces of Alice that Client can access.",
-            narrow.toggleSpace("s1").toggleSpace("s2").body()
-        )
-        assertEquals(
-            "Choose the spaces that Client can access.",
-            narrow.copy(accountName = "").toggleSpace("s1").toggleSpace("s2").body()
-        )
-        // Any limited approval loses /v1; only full access (all spaces, read and change) keeps it.
-        assertNull(loaded.limitNote())
-        assertEquals(
-            "With specific spaces, the app can use the v2 API and MCP only, and cannot create spaces.",
-            loaded.setAllSpaces(false).limitNote()
-        )
-        assertEquals(
-            "With read-only access, the app can use the v2 API and MCP only.",
-            loaded.setAccess(Access.READ_ONLY).limitNote()
-        )
-        assertEquals(
-            "With specific spaces, the app can use the v2 API and MCP only, and cannot create spaces.",
-            loaded.setAllSpaces(false).setAccess(Access.READ_ONLY).limitNote()
-        )
+    fun reach() {
+        assertEquals(ConsentState.Reach.AllSpaces, loaded.reach)
+        val narrow = loaded.setAllSpaces(false).toggleSpace("s1").toggleSpace("s2")
+        assertEquals(ConsentState.Reach.Spaces(2), narrow.reach)
+        assertEquals(ConsentState.Reach.Spaces(1), narrow.toggleSpace("s2").reach)
+        // No space ticked yet: the body asks for a choice instead of describing "0 spaces".
+        assertEquals(ConsentState.Reach.NoSpaceChosen, narrow.toggleSpace("s1").toggleSpace("s2").reach)
     }
 
     @Test
-    fun bodyOmitsBlankAccountName() {
-        assertEquals(
-            "Client will be able to read and change all objects in all your spaces while it is connected.",
-            loaded.copy(accountName = "").body()
-        )
-        assertEquals(
-            "Client will be able to read and change all objects in all your spaces while it is connected.",
-            loaded.copy(accountName = "  ").body()
-        )
+    fun limit() {
+        // Any limited approval loses /v1; only full access (all spaces, read and change) keeps it.
+        assertNull(loaded.limit)
+        assertEquals(ConsentState.Limit.SPECIFIC_SPACES, loaded.setAllSpaces(false).limit)
+        assertEquals(ConsentState.Limit.READ_ONLY, loaded.setAccess(Access.READ_ONLY).limit)
+        assertEquals(ConsentState.Limit.SPECIFIC_SPACES, loaded.setAllSpaces(false).setAccess(Access.READ_ONLY).limit)
+    }
+
+    @Test
+    fun choicesRoundTrip() {
+        val narrow = loaded.setAllSpaces(false).toggleSpace("s3").toggleSpace("s1").setAccess(Access.READ_ONLY)
+        assertEquals(ConsentChoices(false, listOf("s1", "s3"), Access.READ_ONLY), narrow.choices)
+        assertEquals(narrow, loaded.withChoices(narrow.choices))
+        assertEquals(loaded, loaded.withChoices(null))
+    }
+
+    @Test
+    fun choicesDropSpacesNoLongerListed() {
+        val restored = loaded.withChoices(ConsentChoices(false, listOf("gone", "s2"), Access.READ_WRITE))
+        assertFalse(restored.allSpaces)
+        assertEquals(setOf("s2"), restored.selected)
     }
 }

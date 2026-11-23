@@ -27,9 +27,11 @@ dependencies {
     // Anytype's design system: buttons, text styles, colors, contentWidthDp(). The bridge only
     // ships inside :app, which already holds every module core-ui pulls in.
     implementation project(':core-ui')
+    implementation project(':localization')
 
     implementation libs.coroutines
     implementation libs.androidxCore
+    implementation libs.appcompat
     implementation libs.lifecycleViewModel
     implementation libs.lifecycleRuntime
     implementation libs.compose

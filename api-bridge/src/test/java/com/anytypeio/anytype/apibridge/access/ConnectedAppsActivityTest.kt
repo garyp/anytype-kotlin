@@ -23,6 +23,8 @@ import com.anytypeio.anytype.apibridge.KeyNames
 import com.anytypeio.anytype.apibridge.LocalApiGateway
 import com.anytypeio.anytype.apibridge.SpaceDirectory
 import com.anytypeio.anytype.apibridge.SpaceRef
+import com.anytypeio.anytype.apibridge.MAX_LABEL_CHARS
+import com.anytypeio.anytype.localization.R as Loc
 import java.util.concurrent.CopyOnWriteArrayList
 import org.junit.After
 import org.junit.Before
@@ -50,7 +52,11 @@ class ConnectedAppsActivityTest {
         val apps = CopyOnWriteArrayList<GatewayApp>()
         val revoked = CopyOnWriteArrayList<String>()
         override fun setListenAddr(addr: String): String? = null
+        /** When set, listApps blocks until it opens. */
+        @Volatile
+        var listGate: java.util.concurrent.CountDownLatch? = null
         override fun listApps(): List<GatewayApp> {
+            listGate?.await(5, java.util.concurrent.TimeUnit.SECONDS)
             if (failList) throw IllegalStateException("boom")
             return apps.toList()
         }
@@ -63,7 +69,8 @@ class ConnectedAppsActivityTest {
         }
     }
 
-    private class FakeLauncher(var running: AccountRef? = AccountRef("A", "Alice")) : AccountLauncher {
+    private class FakeLauncher(@Volatile var running: AccountRef? = AccountRef("A", "Alice")) : AccountLauncher {
+        @Volatile
         var started = 0
         var fail: Exception? = null
         override fun runningAccount(): AccountRef? = running
@@ -91,10 +98,13 @@ class ConnectedAppsActivityTest {
     }
 
     @After
-    fun tearDown() = ApiBridge.resetForTest()
+    fun tearDown() {
+        ApiBridge.resetForTest()
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_UNSPECIFIED)
+    }
 
     private fun approval(pkg: String, account: String = "A", grant: Grant = Grant.ALL) =
-        Approval(account, pkg, CERT, Access.READ_WRITE, grant, 1_700_000_000_000)
+        Approval(account, pkg, CERT, Access.READ_WRITE, grant, APPROVED_AT)
 
     private fun app(pkg: String, hash: String) = GatewayApp(hash, KeyNames.name(pkg, CERT), "k", 1)
 
@@ -125,8 +135,11 @@ class ConnectedAppsActivityTest {
         launch()
         awaitText("com.one")
         awaitText("com.two")
-        awaitText("All spaces")
-        awaitText("2 spaces")
+        val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(APPROVED_AT))
+        val readWrite = str(Loc.string.api_bridge_access_read_write)
+        awaitText(str(Loc.string.api_bridge_app_summary, readWrite, str(Loc.string.api_bridge_all_spaces), date))
+        val twoSpaces = context.resources.getQuantityString(Loc.plurals.api_bridge_space_count, 2, 2)
+        awaitText(str(Loc.string.api_bridge_app_summary, readWrite, twoSpaces, date))
         awaitText("0123 4567 89ab cdef")
         assertTrue(compose.onAllNodes(hasText("com.other", substring = true)).fetchSemanticsNodes().isEmpty())
     }
@@ -145,8 +158,8 @@ class ConnectedAppsActivityTest {
     fun emptyState() {
         ApiBridge.install(gateway, FakeLauncher(), NoSpaces)
         launch()
-        awaitText("No connected apps")
-        awaitText(ConnectedAppsActivity.EMPTY)
+        awaitText(str(Loc.string.api_bridge_empty_title))
+        awaitText(str(Loc.string.api_bridge_empty_description))
     }
 
     @Test
@@ -156,14 +169,14 @@ class ConnectedAppsActivityTest {
         }
         ApiBridge.install(gateway, launcher, NoSpaces)
         launch()
-        awaitText("Sign in to Anytype first")
+        awaitText(str(Loc.string.api_bridge_sign_in_first))
         assertTrue(compose.onAllNodes(hasText("secret detail", substring = true)).fetchSemanticsNodes().isEmpty())
     }
 
     @Test
     fun bridgeNotInstalledDoesNotCrash() {
         launch()
-        awaitText("Anytype isn't ready")
+        awaitText(str(Loc.string.api_bridge_not_ready))
     }
 
     @Test
@@ -183,7 +196,7 @@ class ConnectedAppsActivityTest {
         awaitCond { "com.one" !in approvals.pendingRevokes("A") }
         assertNull(approvals.find("A", "com.one"))
         assertEquals(setOf("h1", "h1b"), gateway.revoked.toSet())
-        assertTrue(compose.onAllNodes(hasText(ConnectedAppsActivity.REVOKE_RETRYING)).fetchSemanticsNodes().isEmpty())
+        assertTrue(compose.onAllNodes(hasText(retrying)).fetchSemanticsNodes().isEmpty())
         assertEquals("com.two", approvals.find("A", "com.two")?.packageName)
         assertTrue(gateway.apps.any { it.appHash == "h2" })
     }
@@ -199,7 +212,7 @@ class ConnectedAppsActivityTest {
         awaitText("com.one")
         compose.onNodeWithTag(ConnectedAppsActivity.revokeTag("com.one")).performClick()
         awaitGone("com.one")
-        awaitText(ConnectedAppsActivity.REVOKE_RETRYING)
+        awaitText(retrying)
         assertNull(approvals.find("A", "com.one"))
         assertEquals(setOf("com.one"), approvals.pendingRevokes("A"))
     }
@@ -218,7 +231,7 @@ class ConnectedAppsActivityTest {
         assertTrue(gateway.revoked.isEmpty())
         assertEquals(setOf("com.one"), approvals.pendingRevokes("A"))
         // No key is usable while the account is stopped: nothing to warn about.
-        assertTrue(compose.onAllNodes(hasText(ConnectedAppsActivity.REVOKE_RETRYING)).fetchSemanticsNodes().isEmpty())
+        assertTrue(compose.onAllNodes(hasText(retrying)).fetchSemanticsNodes().isEmpty())
     }
 
     @Test
@@ -241,7 +254,135 @@ class ConnectedAppsActivityTest {
         assertTrue(compose.onAllNodes(hasTestTag(ConnectedAppsActivity.revokeTag("com.gone"))).fetchSemanticsNodes().size == 1)
     }
 
+    /**
+     * Back or a rotation right after the tap must not skip the revoke: the approval goes and the
+     * key is revoked although the screen is gone before the revoke is done.
+     */
+    @Test
+    fun revokeCompletesAfterLeavingTheScreen() {
+        approvals.approve(approval("com.one"))
+        // Only the screen's revoke may revoke h1: nothing is pending before it.
+        approvals.clearPendingRevoke("A", "com.one")
+        gateway.apps.add(app("com.one", "h1"))
+        ApiBridge.install(gateway, FakeLauncher(), NoSpaces)
+        val scenario = launch()
+        awaitText("com.one")
+        // The key revoke cannot finish before the screen is gone.
+        val listing = java.util.concurrent.CountDownLatch(1)
+        gateway.listGate = listing
+        compose.onNodeWithTag(ConnectedAppsActivity.revokeTag("com.one")).performClick()
+        scenario.close()
+        listing.countDown()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (approvals.find("A", "com.one") != null || "h1" !in gateway.revoked) {
+            check(System.currentTimeMillis() < deadline) { "the revoke was dropped" }
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+    }
+
+    /** Without a controller (bridge not installed) leaving the screen still drops the approval. */
+    @Test
+    fun revokeWithoutControllerCompletesAfterLeavingTheScreen() {
+        approvals.approve(approval("com.one"))
+        ApiBridge.install(gateway, FakeLauncher(), NoSpaces)
+        val scenario = launch()
+        awaitText("com.one")
+        // The controller only exists once the bridge is installed; drop it after loading.
+        ApiBridge.resetForTest()
+        compose.onNodeWithTag(ConnectedAppsActivity.revokeTag("com.one")).performClick()
+        scenario.close()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (approvals.find("A", "com.one") != null) {
+            check(System.currentTimeMillis() < deadline) { "the revoke was dropped" }
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+    }
+
+    /** The notice is about the latest revoke: a later revoke that completes clears it. */
+    @Test
+    fun noticeClearsWhenALaterRevokeCompletes() {
+        approvals.approve(approval("com.one"))
+        approvals.approve(approval("com.two"))
+        approvals.clearPendingRevoke("A", "com.one")
+        approvals.clearPendingRevoke("A", "com.two")
+        gateway.apps.add(app("com.one", "h1"))
+        gateway.apps.add(app("com.two", "h2"))
+        gateway.failRevoke = true
+        ApiBridge.install(gateway, FakeLauncher(), NoSpaces)
+        launch()
+        awaitText("com.one")
+        compose.onNodeWithTag(ConnectedAppsActivity.revokeTag("com.one")).performClick()
+        awaitText(retrying)
+        gateway.failRevoke = false
+        compose.onNodeWithTag(ConnectedAppsActivity.revokeTag("com.two")).performClick()
+        awaitGone("com.two")
+        awaitGone(retrying)
+    }
+
+    @Test
+    fun windowIsSecureWithOverlaysHidden() {
+        ApiBridge.install(gateway, FakeLauncher(), NoSpaces)
+        launch().onActivity {
+            val attrs = it.window.attributes
+            assertTrue(attrs.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE != 0)
+            // Hidden APIs: the flag that setHideOverlayWindows(true) sets.
+            val params = android.view.WindowManager.LayoutParams::class.java
+            val hide = params.getField("SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS").getInt(null)
+            assertTrue(params.getField("privateFlags").getInt(attrs) and hide != 0)
+        }
+    }
+
+    /** Anytype's in-app Light/Dark setting goes through AppCompatDelegate. */
+    @Test
+    fun followsTheAppNightMode() {
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES)
+        ApiBridge.install(gateway, FakeLauncher(), NoSpaces)
+        launch().onActivity {
+            val night = it.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+            assertEquals(android.content.res.Configuration.UI_MODE_NIGHT_YES, night)
+        }
+    }
+
+    /** The label is the other app's: only its first line shows, trimmed, and only a bounded length of it. */
+    @Test
+    fun labelIsSanitized() {
+        // Read as HTML, as the system reads app labels: a raw newline is whitespace, and the
+        // label ends at its first line break.
+        installApp("com.one", "  Evil\nApp<br>Injected line")
+        installApp("com.two", "L".repeat(5_000))
+        approvals.approve(approval("com.one"))
+        approvals.approve(approval("com.two"))
+        ApiBridge.install(gateway, FakeLauncher(), NoSpaces)
+        launch()
+        awaitText("Evil App")
+        assertTrue(compose.onAllNodes(hasText("Evil App")).fetchSemanticsNodes().isNotEmpty())
+        assertTrue(compose.onAllNodes(hasText("Injected", substring = true)).fetchSemanticsNodes().isEmpty())
+        awaitText("LLLL")
+        val long = compose.onAllNodes(hasText("LLLL", substring = true)).fetchSemanticsNodes()
+            .flatMap { it.config[androidx.compose.ui.semantics.SemanticsProperties.Text] }
+            .map { it.text }
+        assertTrue(long.isNotEmpty() && long.all { it.length <= MAX_LABEL_CHARS }, "label not bounded: ${long.map { it.length }}")
+    }
+
+    private fun installApp(pkg: String, label: String) {
+        shadowOf(context.packageManager).installPackage(android.content.pm.PackageInfo().apply {
+            packageName = pkg
+            applicationInfo = android.content.pm.ApplicationInfo().apply {
+                packageName = pkg
+                labelRes = 0
+                nonLocalizedLabel = label
+            }
+        })
+    }
+
+    private fun str(id: Int, vararg args: Any): String = context.getString(id, *args)
+
+    private val retrying get() = str(Loc.string.api_bridge_revoke_retrying)
+
     private companion object {
         const val CERT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        const val APPROVED_AT = 1_700_000_000_000
     }
 }

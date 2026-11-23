@@ -31,20 +31,43 @@ Anytype's theme; the plan fell back to Material3 without weighing `core-ui`.
   `sheetMaxWidth = contentWidthDp()`, 16 dp top corners, `background_secondary`,
   `modal_screen_outside_background` scrim, `DragHandle()`. Swipe, Back and a tap on the scrim mean
   Don't allow. Content: the app icon (56 dp), `AlertTitle`, `AlertDescription`, package and
-  certificate (`Caption1Regular`, secondary), then `Section("Access")` with two 52 dp `BodyRegular`
+  certificate (`Caption1Regular`, secondary; the account name on its own caption line above,
+  only when it is not blank), then `Section("Access")` with two 52 dp `BodyRegular`
   rows (a tick on the selected one) and `Section("Spaces")` with the All spaces switch
   (`color_accent_80` track) and a checkbox row per space when it is off, rows separated by
-  `Divider()`; then `ButtonPrimary` Allow over `ButtonSecondary` Don't allow, and a
-  "Manage connected apps" link.
+  `Divider()`; then `ButtonPrimaryLoading` Allow (loading while the approval saves) over
+  `ButtonSecondary` Don't allow, and a "Manage connected apps" link.
 - **Protections on the sheet's window.** The sheet is its own window (`ModalBottomSheetWindow`):
   `ModalBottomSheetProperties(securePolicy = SecureOn)` keeps it out of screenshots, and the
-  obscured-touch filter goes on its root view (the parent of the sheet's compose view). The
+  obscured-touch filter and accessibility data sensitivity go on the root view of the sheet's
+  window (views inherit the sensitivity; the tests check the compose view under it). The
   activity window under it stays `FLAG_SECURE` with overlays hidden. Allow keeps its
   `pointerInteropFilter` and the arming delay.
 - **Connected apps.** The space settings pattern: a `Scaffold` with the 48 dp top bar
   (`ic_default_top_back`) and a centred `Title1`, `Section("Apps with access")`, one bordered card
   per app (0.5 dp `shape_primary`, 16 dp radius) with the icon, name (`PreviewTitle1Regular`),
-  access line and certificate, and Revoke as `ButtonWarning`. Empty and error states use
-  `EmptyState`. The revoke-retrying notice sits above the list so it survives an emptied list.
-- **Theme.** Colors come from `core-ui` resources, so light and dark follow Anytype's own
-  resources instead of the wallpaper.
+  access line and certificate, and Revoke as `ButtonWarningLoading` (loading while it runs). Empty and error states use
+  `EmptyState`. The revoke-retrying notice sits above the list so it survives an emptied list;
+  it describes the latest revoke that finished, so a later complete revoke clears it.
+- **Theme.** Colors come from `core-ui` resources. Both screens are `AppCompatActivity`, so
+  Anytype's in-app Light/Dark setting (`AppCompatDelegate.setDefaultNightMode`) reaches them:
+  Connected apps uses `AppTheme`, the consent screen `ApiBridgeConsentTheme` (`AppTheme` on a
+  translucent, undimmed window with no title, like the `Theme.Translucent.NoTitleBar` it
+  replaces), so the requesting app stays visible under the sheet's scrim.
+
+## Follow-up decisions (2026-11-23)
+
+- **Strings** live in `:localization` (`api_bridge_*`); `ConsentState` holds no text, only what
+  the screen chooses strings from (`reach`, `limit`).
+- **App labels** are the other app's text: one helper (`InstalledApps.kt`) reads them through
+  `TextUtils.makeSafeForPresentation` (first line, trimmed, bounded length) for both screens.
+  As for the system's own labels, the label is read as HTML: a raw newline is whitespace, `<br>`
+  ends it.
+- **Consent state.** The content is null until it has loaded; the answer being saved is separate.
+  The choices are saved across a recreation whenever the content has loaded, also while Allow
+  saves.
+- **Revokes outlive the screen.** Connected apps runs its revoke (the controller call and the
+  no-controller fallback) in `withContext(NonCancellable)`, so Back or a rotation right after
+  the tap no longer skips it.
+- **Tests** find the sheet window through Robolectric's `ShadowDialog` (Material3 1.3 shows the
+  sheet in a dialog), so the activity has no test-only hook for it.

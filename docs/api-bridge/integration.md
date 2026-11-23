@@ -136,7 +136,8 @@ try {
 ```
 
 `approvalOptions()` enables share-identity (API 34+), which lets Anytype see which app is asking.
-Without it the consent screen refuses. The user sees your app name and signing certificate, picks
+Without it the consent screen refuses. The user sees your app name (the first line of your app's
+label, as the system shows labels) and signing certificate, picks
 all spaces or specific ones, and read-only or read-write. Other exceptions: `NotInstalled`
 (Anytype is missing or has no bridge), `Untrusted` (the package is not signed with the pinned
 certificate) and `Failed(code)`, whose `message` says what failed (including an
@@ -144,7 +145,7 @@ Anytype bridge too old for this client: `INTERNAL`, "no reply: ...").
 
 Approvals are per Anytype account and pinned to your package name and signing certificate. The user
 can list and revoke connected apps on Anytype's "Connected apps" screen (also reachable from the
-"Manage connected apps" button of the consent screen). Revoking cuts a live app off at once when the account is running (its next request gets 401).
+"Manage connected apps" button of the consent screen). Revoking cuts a live app off at once when the account is running (its next request gets 401); it completes even if the user leaves that screen right away.
 
 ## 3. Call the API with standard HTTP and MCP libraries
 
