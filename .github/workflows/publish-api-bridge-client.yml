@@ -1,6 +1,7 @@
 # Publishes :api-bridge-client to this repository's GitHub Packages registry as
-# io.anytype.apibridge:api-bridge-client:<version>. Push a tag api-bridge-client-v<version>
-# (for example api-bridge-client-v0.1.0) to run it. A version can be published only once.
+# io.anytype.apibridge:api-bridge-client:<version>, where <version> is the app's version. Push a
+# tag api-bridge-client-v<version> (for example api-bridge-client-v0.50.4) to run it; the job
+# fails if the tag doesn't match the app's version. A version can be published only once.
 name: Publish API bridge client
 on:
   push:
@@ -24,9 +25,14 @@ jobs:
         # registries it configures, so the workflow's own token is enough.
         run: |
           printf 'gpr.usr=%s\ngpr.key=%s\n' "${{ github.actor }}" "${{ secrets.GITHUB_TOKEN }}" > github.properties
+      - name: Check the tag matches the app's version
+        run: |
+          version="$(./gradlew -q :api-bridge-client:printApiBridgeClientVersion)"
+          if [ "${GITHUB_REF_NAME}" != "api-bridge-client-v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match the app's version ${version}; push api-bridge-client-v${version}"
+            exit 1
+          fi
       - name: Test and publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >
-          ./gradlew :api-bridge-client:testDebugUnitTest :api-bridge-client:publish
-          -PapiBridgeClientVersion="${GITHUB_REF_NAME#api-bridge-client-v}"
+        run: ./gradlew :api-bridge-client:testDebugUnitTest :api-bridge-client:publish

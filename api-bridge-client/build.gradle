@@ -37,6 +37,19 @@ dependencies {
     testImplementation libs.kotlinTest
 }
 
+// The client's version is the app's (app/gradle.properties, as versioning.gradle builds it, without
+// the dated variant), so it never needs a bump of its own. -Pversion.versionPostfix=<n> publishes
+// a second build of the same app version as <version>-<n>.
+def appVersionProps = new Properties()
+rootProject.file("app/gradle.properties").withInputStream { appVersionProps.load(it) }
+def apiBridgeClientVersion = ["Major", "Minor", "Patch"]
+    .collect { appVersionProps.getProperty("version.version$it") }.join(".") +
+    (project.findProperty("version.versionPostfix")?.with { "-$it" } ?: "")
+
+tasks.register("printApiBridgeClientVersion") {
+    doLast { println(apiBridgeClientVersion) }
+}
+
 // Published to the GitHub Packages registry of the repository that runs the build, by
 // .github/workflows/publish-api-bridge-client.yml on an api-bridge-client-v<version> tag.
 afterEvaluate {
@@ -46,7 +59,7 @@ afterEvaluate {
                 from components.release
                 groupId = "io.anytype.apibridge"
                 artifactId = "api-bridge-client"
-                version = project.findProperty("apiBridgeClientVersion") ?: "0.0.0-SNAPSHOT"
+                version = apiBridgeClientVersion
             }
         }
         repositories {

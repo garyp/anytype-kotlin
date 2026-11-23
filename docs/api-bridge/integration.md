@@ -28,11 +28,12 @@ dependencyResolutionManagement {
 
 // build.gradle.kts
 dependencies {
-    implementation("io.anytype.apibridge:api-bridge-client:0.1.0")
+    implementation("io.anytype.apibridge:api-bridge-client:0.50.4")
 }
 ```
 
-It declares `INTERNET` and the `<queries>` entry for the bridge.
+The library's version follows the Anytype app's version. It declares `INTERNET` and the
+`<queries>` entry for the bridge.
 
 The API is plain HTTP on `127.0.0.1`, so allow cleartext to loopback only:
 
@@ -122,10 +123,24 @@ example with OkHttp and the Kotlin MCP SDK.
 - A tool that fails returns a normal result with `isError = true`; check it on every call.
 - `find` returns numbered handles that `read` accepts, valid only within the same MCP session.
 - `find` searches a full-text index, so a just-created object may take a moment to appear.
-- `docs/api-bridge/small-tools-manifest.json` lists the small-tier tools with JSON schemas,
-  examples and GBNF grammars, for constrained decoding with on-device models.
 
-## 4. Stay connected
+## 4. AI agents on small models: the tool manifest
+
+`docs/api-bridge/small-tools-manifest.json` describes the small-tier MCP tools: each tool's JSON
+schema, an example call and a GBNF grammar, plus a `filterGrammar`. An app that runs an on-device
+model as an agent can bundle it and use the grammars for constrained decoding (llama.cpp style),
+so even a weak model emits valid tool arguments.
+
+The manifest must match the heart version Anytype ships. Regenerate it whenever that changes, from
+a checkout of heart at the same version ([garyp/anytype-heart](https://github.com/garyp/anytype-heart),
+branch `apibridge`, until the fix is upstream):
+
+```bash
+cd ../anytype-heart
+go run ./cmd/anytype tools --tier small > ../anytype-kotlin/docs/api-bridge/small-tools-manifest.json
+```
+
+## 5. Stay connected
 
 - Keep the `AnytypeBridge` instance, and its binding, while you use the API. Anytype opens the
   local API only while an app is bound, and closes it when the last one calls `close()`.

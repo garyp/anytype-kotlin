@@ -206,8 +206,13 @@ get 401; the `Origin` 403 was checked once by hand (above).
 ## Publishing the client library
 
 `:api-bridge-client` is published as `io.anytype.apibridge:api-bridge-client:<version>` to the
-GitHub Packages registry of `garyp/anytype-kotlin`. Push a tag `api-bridge-client-v<version>` (for
-example `api-bridge-client-v0.1.0`) and `.github/workflows/publish-api-bridge-client.yml` runs the
-client's unit tests and publishes that version. A version can be published only once; publish a
-new one rather than reusing it. To check the artifact locally:
-`./gradlew :api-bridge-client:publishReleasePublicationToMavenLocal -PapiBridgeClientVersion=0.0.1-local`.
+GitHub Packages registry of `garyp/anytype-kotlin`. `<version>` is the app's version from
+`app/gradle.properties` (`0.50.4` today), so the library needs no version bump of its own.
+
+Push a tag `api-bridge-client-v<version>` (for example `api-bridge-client-v0.50.4`), and
+`.github/workflows/publish-api-bridge-client.yml` runs the client's unit tests and publishes it.
+The job fails if the tag doesn't match the app's version (`./gradlew -q
+:api-bridge-client:printApiBridgeClientVersion` prints it). A version can be published only once:
+to publish the client again before the app's version changes, add `version.versionPostfix=<n>` to
+`app/gradle.properties` (version `<version>-<n>`), as for an app build. To check the artifact
+locally: `./gradlew :api-bridge-client:publishReleasePublicationToMavenLocal`.
