@@ -2645,4 +2645,46 @@
     <string name="search_v2_recently_created">Recently created</string>
     <string name="search_v2_filter_by">Filter by %1$s</string>
 
+    <!-- API bridge: connected apps -->
+    <string name="api_bridge_consent_title">Allow %1$s to access Anytype?</string>
+    <string name="api_bridge_consent_body_all_read_write">%1$s will be able to read and change all objects in all your spaces while it is connected.</string>
+    <string name="api_bridge_consent_body_all_read_only">%1$s will be able to read all objects in all your spaces while it is connected.</string>
+    <plurals name="api_bridge_consent_body_spaces_read_write">
+        <item quantity="one">%1$s will be able to read and change all objects in %2$d space while it is connected.</item>
+        <item quantity="other">%1$s will be able to read and change all objects in %2$d spaces while it is connected.</item>
+    </plurals>
+    <plurals name="api_bridge_consent_body_spaces_read_only">
+        <item quantity="one">%1$s will be able to read all objects in %2$d space while it is connected.</item>
+        <item quantity="other">%1$s will be able to read all objects in %2$d spaces while it is connected.</item>
+    </plurals>
+    <string name="api_bridge_consent_body_choose_spaces">Choose the spaces that %1$s can access.</string>
+    <string name="api_bridge_consent_account">Account: %1$s</string>
+    <string name="api_bridge_consent_access">Access</string>
+    <string name="api_bridge_access_read_write">Read and change</string>
+    <string name="api_bridge_access_read_only">Read only</string>
+    <string name="api_bridge_consent_spaces">Spaces</string>
+    <string name="api_bridge_all_spaces">All spaces</string>
+    <string name="api_bridge_consent_note_spaces">With specific spaces, the app can use the v2 API and MCP only, and cannot create spaces.</string>
+    <string name="api_bridge_consent_note_read_only">With read-only access, the app can use the v2 API and MCP only.</string>
+    <string name="api_bridge_consent_allow">Allow</string>
+    <string name="api_bridge_consent_deny">Don\'t allow</string>
+    <string name="api_bridge_manage_connected_apps">Manage connected apps</string>
+    <string name="api_bridge_sign_in_first">Sign in to Anytype first</string>
+    <string name="api_bridge_unverified_caller">Anytype couldn\'t verify the app that asked for access</string>
+    <string name="api_bridge_approve_failed">Something went wrong. Try again.</string>
+    <string name="api_bridge_connected_apps">Connected apps</string>
+    <string name="api_bridge_unavailable">Connected apps are unavailable</string>
+    <string name="api_bridge_not_ready">Anytype isn\'t ready. Try again in a moment.</string>
+    <string name="api_bridge_empty_title">No connected apps</string>
+    <string name="api_bridge_empty_description">When you allow an app to access Anytype, it appears here and you can revoke it at any time.</string>
+    <string name="api_bridge_apps_with_access">Apps with access</string>
+    <string name="api_bridge_footer">Connected apps can use Anytype\'s local API while they are connected. Revoking an app removes its access.</string>
+    <string name="api_bridge_revoke">Revoke</string>
+    <string name="api_bridge_revoke_retrying">Couldn\'t fully revoke access yet. Anytype keeps retrying while it runs.</string>
+    <plurals name="api_bridge_space_count">
+        <item quantity="one">%d space</item>
+        <item quantity="other">%d spaces</item>
+    </plurals>
+    <string name="api_bridge_app_summary">%1$s · %2$s · %3$s</string>
+
 </resources>
