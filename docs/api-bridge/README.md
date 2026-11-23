@@ -49,7 +49,7 @@ wins: delete `~/.m2/repository/io/anyproto/anytype-heart-android/<version>` to f
 2. Push the branch, publish `vX.Y.Z-apibridge.N` as above, and tag that commit locally for the
    contract tests.
 3. Set `middlewareVersion` and `HEART_TAG` in `scripts/api-bridge/run-contract-tests.sh`.
-4. Run the contract tests, and regenerate `small-tools-manifest.json` (see integration.md).
+4. Run the contract tests, and regenerate the client library's tool manifest (see integration.md).
 
 ### Dropping the fork
 

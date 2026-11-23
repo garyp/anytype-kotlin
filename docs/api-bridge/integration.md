@@ -126,18 +126,26 @@ example with OkHttp and the Kotlin MCP SDK.
 
 ## 4. AI agents on small models: the tool manifest
 
-`docs/api-bridge/small-tools-manifest.json` describes the small-tier MCP tools: each tool's JSON
-schema, an example call and a GBNF grammar, plus a `filterGrammar`. An app that runs an on-device
-model as an agent can bundle it and use the grammars for constrained decoding (llama.cpp style),
-so even a weak model emits valid tool arguments.
+The client library bundles a manifest of the small-tier MCP tools: each tool's JSON schema, an
+example call and a GBNF grammar, plus a `filterGrammar`. An app that runs an on-device model as an
+agent can use the grammars for constrained decoding (llama.cpp style), so even a weak model emits
+valid tool arguments:
 
-The manifest must match the heart version Anytype ships. Regenerate it whenever that changes, from
-a checkout of heart at the same version ([garyp/anytype-heart](https://github.com/garyp/anytype-heart),
+```kotlin
+val manifest = JSONObject(ToolManifest.smallTier(context))   // reads an asset: off the main thread
+```
+
+The manifest matches the Anytype release with the library's version. If the user's Anytype is
+older or newer, its tools may differ slightly; `tools/list` over MCP is always current.
+
+The manifest is generated from heart at the version the app ships. Regenerate it whenever that
+changes, from a checkout of heart at that version ([garyp/anytype-heart](https://github.com/garyp/anytype-heart),
 branch `apibridge`, until the fix is upstream):
 
 ```bash
 cd ../anytype-heart
-go run ./cmd/anytype tools --tier small > ../anytype-kotlin/docs/api-bridge/small-tools-manifest.json
+go run ./cmd/anytype tools --tier small \
+  > ../anytype-kotlin/api-bridge-client/src/main/assets/anytype-api-bridge/small-tools-manifest.json
 ```
 
 ## 5. Stay connected
