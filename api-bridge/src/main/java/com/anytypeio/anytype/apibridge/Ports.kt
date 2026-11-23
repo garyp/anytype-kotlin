@@ -13,7 +13,8 @@ data class GatewayApp(
 interface LocalApiGateway {
     fun setListenAddr(addr: String): String?
     fun listApps(): List<GatewayApp>
-    fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): GatewayApp
+    /** Mints a key and returns it. [spaceIds] null grants every space. */
+    fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): String
     fun revokeApp(appHash: String)
 }
 

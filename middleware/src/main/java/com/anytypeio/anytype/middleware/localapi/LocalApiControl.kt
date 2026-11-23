@@ -62,10 +62,10 @@ class LocalApiControl(private val calls: HeartCalls = GomobileHeartCalls) {
     }
 
     /**
-     * Mints a JSON-API-scoped app key. [spaceIds] null grants every space;
+     * Mints a JSON-API-scoped app key and returns it. [spaceIds] null grants every space;
      * an empty list is rejected.
      */
-    fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): LocalApiApp {
+    fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): String {
         require(spaceIds == null || spaceIds.isNotEmpty()) {
             "spaceIds must be null (all spaces) or non-empty"
         }
@@ -87,19 +87,7 @@ class LocalApiControl(private val calls: HeartCalls = GomobileHeartCalls) {
         )
         response.error?.takeIf { it.code != Rpc.Account.LocalLink.CreateApp.Response.Error.Code.NULL }
             ?.let { throw LocalApiException("CreateApp failed: ${it.code} ${it.description}") }
-        // CreateApp returns only the key; resolve heart's own entry (hash, name,
-        // createdAt) from the listing so every field comes from the same source.
-        val listed = try {
-            listApps()
-        } catch (e: Exception) {
-            throw LocalApiException(
-                "App key was created but could not be resolved: listing apps failed (${e.message})"
-            )
-        }
-        return listed.firstOrNull { it.appKey == response.appKey }
-            ?: throw LocalApiException(
-                "App key was created but could not be resolved: not found in the app list"
-            )
+        return response.appKey
     }
 
     /** Revokes an app key. An unknown hash counts as already revoked. */

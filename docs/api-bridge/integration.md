@@ -139,8 +139,8 @@ try {
 Without it the consent screen refuses. The user sees your app name and signing certificate, picks
 all spaces or specific ones, and read-only or read-write. Other exceptions: `NotInstalled`
 (Anytype is missing or has no bridge), `Untrusted` (the package is not signed with the pinned
-certificate) and `Failed(code, msg)` (including an
-Anytype bridge too old for this client: `Failed(INTERNAL, "no reply: ...")`).
+certificate) and `Failed(code)`, whose `message` says what failed (including an
+Anytype bridge too old for this client: `INTERNAL`, "no reply: ...").
 
 Approvals are per Anytype account and pinned to your package name and signing certificate. The user
 can list and revoke connected apps on Anytype's "Connected apps" screen (also reachable from the
@@ -255,8 +255,8 @@ agent driven by a small model, prefer the small tier (`/mcp/small`); heart desig
   Anytype from being frozen in the background and keeps the listener open. The listener closes
   when the last binding of any app closes (`close()`).
 - On any connection failure (connection refused, 401, binder death) call `connect()` again: the
-  port can change between sessions, and the key can be re-minted. If the endpoint was rejected,
-  call `markStale()` first so the next `connect()` rebinds afresh.
+  port can change between sessions, and the key can be re-minted. Each `connect()` asks the
+  service afresh, and a dead binding is rebound.
 
 ## 5. Use case: AI agents on small models (GBNF tool manifest)
 

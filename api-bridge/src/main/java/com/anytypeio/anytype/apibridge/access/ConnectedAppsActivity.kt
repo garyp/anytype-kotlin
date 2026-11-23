@@ -50,7 +50,6 @@ import com.anytypeio.anytype.apibridge.Access
 import com.anytypeio.anytype.apibridge.AppApprovals
 import com.anytypeio.anytype.apibridge.ApiBridge
 import com.anytypeio.anytype.apibridge.Approval
-import com.anytypeio.anytype.apibridge.BridgeController
 import com.anytypeio.anytype.apibridge.KeyNames
 import com.anytypeio.anytype.apibridge.consent.ConsentState
 import com.anytypeio.anytype.core_ui.R
@@ -186,7 +185,7 @@ class ConnectedAppsActivity : ComponentActivity() {
             withContext(Dispatchers.IO) { approvals.revoke(accountId, pkg) }
             return true
         }
-        return controller.revokeApp(accountId, pkg) != BridgeController.RevokeOutcome.RETRYING
+        return controller.revokeApp(accountId, pkg)
     }
 
     private fun iconOf(pkg: String, px: Int): ImageBitmap? = try {

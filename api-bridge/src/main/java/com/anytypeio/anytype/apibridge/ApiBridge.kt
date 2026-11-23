@@ -72,14 +72,10 @@ object ApiBridge {
      */
     internal val inFlightConnects = ConcurrentHashMap<Int, Deferred<BridgeController.ConnectResult>>()
 
-    /** Test seams: replace the [CallerVerifier]-backed checks. */
+    /** Test seam: replaces the [CallerVerifier]. */
     @VisibleForTesting
     @Volatile
-    internal var callerCheckOverride: CallerCheck? = null
-
-    @VisibleForTesting
-    @Volatile
-    internal var approvedAnywhereOverride: ApprovedAnywhere? = null
+    internal var callerApprovalsOverride: CallerApprovals? = null
 
     /**
      * Call exactly once per process, synchronously in `Application.onCreate` (on API 35+), so no
@@ -104,15 +100,12 @@ object ApiBridge {
         if (Build.VERSION.SDK_INT < 35) return null
         val app = context.applicationContext
         val approvals = AppApprovals(app)
-        val verifier = CallerVerifier(app.packageManager, approvals)
         BridgeController(
             gateway = gateway,
             launcher = launcher,
             approvals = approvals,
-            callerCheck = callerCheckOverride
-                ?: CallerCheck { uid, acc -> verifier.approvedCaller(uid, acc) },
-            approvedAnywhere = approvedAnywhereOverride
-                ?: ApprovedAnywhere { uid -> verifier.approvedAnywhere(uid) },
+            callerApprovals = callerApprovalsOverride
+                ?: CallerVerifier(app.packageManager, approvals),
             probe = ::probe,
             dispatcher = Dispatchers.IO,
             idle = ::idle,
@@ -139,8 +132,7 @@ object ApiBridge {
         launcher = null
         spaces = null
         controller = null
-        callerCheckOverride = null
-        approvedAnywhereOverride = null
+        callerApprovalsOverride = null
         unbindDispatcher = Dispatchers.IO
         connectTimeoutMs = CONNECT_TIMEOUT_MS
         activeBindings.set(0)

@@ -16,9 +16,7 @@ class LocalApiControlTest {
         var changeResp = Rpc.Account.ChangeJsonApiAddr.Response()
         var createReq: Rpc.Account.LocalLink.CreateApp.Request? = null
         var createResp = Rpc.Account.LocalLink.CreateApp.Response(appKey = "key")
-        var listResp = Rpc.Account.LocalLink.ListApps.Response(
-            app = listOf(Account.Auth.AppInfo(appHash = "h", appName = "bridge", appKey = "key", createdAt = 7))
-        )
+        var listResp = Rpc.Account.LocalLink.ListApps.Response()
         var revokeReq: Rpc.Account.LocalLink.RevokeApp.Request? = null
         var revokeResp = Rpc.Account.LocalLink.RevokeApp.Response()
 
@@ -72,14 +70,14 @@ class LocalApiControlTest {
 
     @Test
     fun createAppSendsAllSpacesWhenNull() {
-        val app = control.createApp("bridge", readWrite = false, spaceIds = null)
+        val key = control.createApp("bridge", readWrite = false, spaceIds = null)
         val info = calls.createReq!!.app!!
         assertEquals("bridge", info.appName)
         assertEquals(Account.Auth.LocalApiScope.JsonAPI, info.scope)
         assertTrue(info.grant!!.allSpaces)
         assertTrue(info.grant!!.spaceIds.isEmpty())
         assertEquals(Account.Auth.AppGrant.Perm.Read, info.grant!!.perm)
-        assertEquals(LocalApiApp("h", "bridge", "key", 7), app)
+        assertEquals("key", key)
     }
 
     @Test
@@ -96,25 +94,6 @@ class LocalApiControlTest {
         assertFailsWith<IllegalArgumentException> {
             control.createApp("bridge", readWrite = false, spaceIds = emptyList())
         }
-    }
-
-    @Test
-    fun createAppReturnsListedEntryMatchedByKey() {
-        calls.createResp = Rpc.Account.LocalLink.CreateApp.Response(appKey = "new")
-        calls.listResp = Rpc.Account.LocalLink.ListApps.Response(
-            app = listOf(
-                Account.Auth.AppInfo(appHash = "h1", appName = "bridge", appKey = "old", createdAt = 1),
-                Account.Auth.AppInfo(appHash = "h2", appName = "bridge", appKey = "new", createdAt = 99)
-            )
-        )
-        assertEquals(LocalApiApp("h2", "bridge", "new", 99), control.createApp("bridge", false, null))
-    }
-
-    @Test
-    fun createAppThrowsWhenCreatedKeyNotListed() {
-        calls.createResp = Rpc.Account.LocalLink.CreateApp.Response(appKey = "new")
-        val e = assertFailsWith<LocalApiException> { control.createApp("bridge", false, null) }
-        assertTrue(e.message!!.contains("created but could not be resolved"))
     }
 
     @Test

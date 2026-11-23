@@ -7,14 +7,13 @@ plugins {
 android {
     namespace 'io.anytype.apibridge.testapp'
 
-    // Same override as the bridge modules: AGP 9.0.0 resolves android-37.2 only via minorApiLevel.
-    compileSdk { version = release(37) { minorApiLevel = 2 } }
+    // The root build.gradle sets the SDK levels for library modules only.
+    compileSdk = rootProject.ext.compile_sdk
 
     defaultConfig {
         applicationId "io.anytype.apibridge.testapp"
         minSdk 35
-        // 37 is accepted by AGP 9.0.0 (verified by the build).
-        targetSdk 37
+        targetSdk = rootProject.ext.target_sdk
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"

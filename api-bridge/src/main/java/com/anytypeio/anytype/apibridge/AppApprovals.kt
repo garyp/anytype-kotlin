@@ -26,14 +26,21 @@ class AppApprovals(
 
     fun all(): List<Approval> = read().approvals.toList()
 
+    /** Replaces the package's approval; its earlier keys are queued for revocation. */
     fun approve(a: Approval) = update {
         approvals.removeAll { it.accountId == a.accountId && it.packageName == a.packageName }
         approvals.add(a)
         pending.add(PendingRevoke(a.accountId, a.packageName))
     }
 
+    /** Removes the package's approval and queues its keys for revocation. */
     fun revoke(accountId: String, pkg: String) = update {
         approvals.removeAll { it.accountId == accountId && it.packageName == pkg }
+        pending.add(PendingRevoke(accountId, pkg))
+    }
+
+    /** Queues every key of [pkg] under [accountId] for revocation; the approval stays. */
+    fun queueRevoke(accountId: String, pkg: String) = update {
         pending.add(PendingRevoke(accountId, pkg))
     }
 

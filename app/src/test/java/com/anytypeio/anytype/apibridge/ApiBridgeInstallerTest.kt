@@ -176,23 +176,15 @@ class ApiBridgeInstallerTest {
     }
 
     @Test
-    fun gatewayAdapterMapsCreateApp() {
+    fun gatewayAdapterPassesCreateAppThrough() {
         val control = mock<LocalApiControl> {
-            on { createApp("client", true, listOf("space.a")) } doReturn
-                LocalApiApp(appHash = "h", appName = "client", appKey = "k", createdAt = 42L)
-            on { createApp("client", false, null) } doReturn
-                LocalApiApp(appHash = "h2", appName = "client", appKey = "k2", createdAt = 7L)
+            on { createApp("client", true, listOf("space.a")) } doReturn "k"
+            on { createApp("client", false, null) } doReturn "k2"
         }
-        val gateway = LocalApiControlGateway(Lazy { control })
+        val gateway = LocalApiControlGateway(control)
 
-        assertEquals(
-            GatewayApp(appHash = "h", appName = "client", appKey = "k", createdAt = 42L),
-            gateway.createApp("client", true, listOf("space.a"))
-        )
-        assertEquals(
-            GatewayApp(appHash = "h2", appName = "client", appKey = "k2", createdAt = 7L),
-            gateway.createApp("client", false, null)
-        )
+        assertEquals("k", gateway.createApp("client", true, listOf("space.a")))
+        assertEquals("k2", gateway.createApp("client", false, null))
     }
 
     @Test
@@ -201,7 +193,7 @@ class ApiBridgeInstallerTest {
             on { setListenAddr("127.0.0.1:0") } doReturn "127.0.0.1:5555"
             on { listApps() } doReturn listOf(LocalApiApp("h", "n", "k", 1L))
         }
-        val gateway = LocalApiControlGateway(Lazy { control })
+        val gateway = LocalApiControlGateway(control)
 
         assertEquals("127.0.0.1:5555", gateway.setListenAddr("127.0.0.1:0"))
         assertEquals(listOf(GatewayApp("h", "n", "k", 1L)), gateway.listApps())

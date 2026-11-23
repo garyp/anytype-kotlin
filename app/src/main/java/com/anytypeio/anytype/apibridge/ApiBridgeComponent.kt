@@ -2,7 +2,6 @@ package com.anytypeio.anytype.apibridge
 
 import com.anytypeio.anytype.core_models.Relations
 import com.anytypeio.anytype.core_models.primitives.SpaceId
-import com.anytypeio.anytype.core_utils.di.scope.PerScreen
 import com.anytypeio.anytype.di.common.ComponentDependencies
 import com.anytypeio.anytype.domain.account.AwaitAccountStartManager
 import com.anytypeio.anytype.domain.auth.interactor.LaunchAccount
@@ -23,16 +22,18 @@ import dagger.Component
 import dagger.Lazy
 import dagger.Module
 import dagger.Provides
+import javax.inject.Singleton
 
 /**
- * Builds the [ApiBridgeInstaller]. The app creates it once, in `Application.onCreate`.
- * Every dependency of the adapters is [Lazy], so building the component starts nothing.
+ * Builds the [ApiBridgeInstaller]. The app creates it once per process, in
+ * `Application.onCreate`. The adapters hold their middleware dependencies through [Lazy], and
+ * [LocalApiControl] only wraps the gomobile calls, so building the component starts nothing.
  */
 @Component(
     dependencies = [ApiBridgeDependencies::class],
     modules = [ApiBridgeModule::class]
 )
-@PerScreen
+@Singleton
 interface ApiBridgeComponent {
 
     fun installer(): ApiBridgeInstaller
@@ -48,15 +49,12 @@ object ApiBridgeModule {
 
     @JvmStatic
     @Provides
-    @PerScreen
-    fun provideGateway(): LocalApiGateway {
-        val control by lazy { LocalApiControl() }
-        return LocalApiControlGateway(Lazy { control })
-    }
+    @Singleton
+    fun provideGateway(): LocalApiGateway = LocalApiControlGateway(LocalApiControl())
 
     @JvmStatic
     @Provides
-    @PerScreen
+    @Singleton
     fun provideLauncher(
         authRepository: Lazy<AuthRepository>,
         configStorage: Lazy<ConfigStorage>,
@@ -85,14 +83,14 @@ object ApiBridgeModule {
 
     @JvmStatic
     @Provides
-    @PerScreen
+    @Singleton
     fun provideSpaces(
         container: Lazy<SpaceViewSubscriptionContainer>
     ): SpaceDirectory = SpaceViewDirectory(container)
 
     @JvmStatic
     @Provides
-    @PerScreen
+    @Singleton
     fun provideLaunchWallet(
         authRepository: AuthRepository,
         pathProvider: PathProvider
@@ -103,7 +101,7 @@ object ApiBridgeModule {
 
     @JvmStatic
     @Provides
-    @PerScreen
+    @Singleton
     fun provideLaunchAccount(
         authRepository: AuthRepository,
         pathProvider: PathProvider,
@@ -126,7 +124,7 @@ object ApiBridgeModule {
 
     @JvmStatic
     @Provides
-    @PerScreen
+    @Singleton
     fun provideFetchObject(
         repo: BlockRepository,
         dispatchers: AppCoroutineDispatchers

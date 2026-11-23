@@ -68,7 +68,7 @@ import com.anytypeio.anytype.apibridge.AccountRef
 import com.anytypeio.anytype.apibridge.AppApprovals
 import com.anytypeio.anytype.apibridge.ApiBridge
 import com.anytypeio.anytype.apibridge.Approval
-import com.anytypeio.anytype.apibridge.CallerVerifier
+import com.anytypeio.anytype.apibridge.currentCertSha256
 import com.anytypeio.anytype.apibridge.access.ConnectedAppsActivity
 import com.anytypeio.anytype.core_ui.R
 import com.anytypeio.anytype.core_ui.extensions.contentWidthDp
@@ -333,7 +333,7 @@ class ConnectApprovalActivity : ComponentActivity() {
         private const val KEY_ACCESS = "access"
 
         private val defaultCertLookup = CertLookup { context, pkg ->
-            CallerVerifier(context.packageManager, AppApprovals(context)).currentCertSha256(pkg)
+            currentCertSha256(context.packageManager, pkg)
         }
 
         @VisibleForTesting

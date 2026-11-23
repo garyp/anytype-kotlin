@@ -12,30 +12,21 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/** Test seam over [CallerVerifier.approvedCaller]. */
-fun interface CallerCheck {
-    fun approved(uid: Int, accountId: String): Approval?
-}
-
-/** Test seam over [CallerVerifier.approvedAnywhere]. */
-fun interface ApprovedAnywhere {
-    fun approvedAnywhere(uid: Int): Boolean
-}
-
 /**
- * Connect and unbind logic of the API bridge.
+ * Connect, revoke and unbind logic of the API bridge.
  *
  * Every connect runs under one [Mutex]: turn away a caller approved under no account at all
  * (it must not start the account or learn its state), start the account, check the caller's
  * approval for that account, sweep keys pending revocation, make sure heart's local API listens,
- * and hand out the caller's key. Blocking work (gateway, approvals store, [probe]) runs on
- * [dispatcher].
+ * and hand out the caller's key. [revokeApp] runs under the same mutex, so no connect that passed
+ * its approval check is mid-way to minting a key. Blocking work (gateway, approvals store,
+ * [probe]) runs on [dispatcher].
  *
- * Keys pending revocation for the running account are swept on every connect that reaches the
- * controller (before any listener opens), and on every unbind. A caller approved under no account
- * never reaches it: [ApiBridgeService] answers it from [isApprovedAnywhere] first, so such a
- * call sweeps nothing; the next approved connect or unbind does. When a revoke fails, a retry loop in
- * [retryScope] sweeps again with backoff while that account runs.
+ * Every key revoke goes through one sweep of the account's pending revokes: [AppApprovals]
+ * queues one for a package on every approval and revocation, and the sweep clears it only once
+ * every key of that package is revoked. The sweep runs on connect (before any listener opens),
+ * on [revokeApp], and on the last unbind, while the account runs. When a revoke fails, a retry
+ * loop in [retryScope] sweeps again with backoff while that account runs.
  *
  * [idle] is true when no client is bound to the service. It is read under the mutex, so closing
  * the listener and a new connect never interleave.
@@ -44,8 +35,7 @@ class BridgeController(
     private val gateway: LocalApiGateway,
     private val launcher: AccountLauncher,
     private val approvals: AppApprovals,
-    private val callerCheck: CallerCheck,
-    private val approvedAnywhere: ApprovedAnywhere,
+    private val callerApprovals: CallerApprovals,
     /** True when something accepts connections at the given host:port. */
     private val probe: (String) -> Boolean,
     private val dispatcher: CoroutineDispatcher,
@@ -57,18 +47,6 @@ class BridgeController(
     private val retryStartDelayMs: Long = RETRY_START_MS,
     private val retryMaxDelayMs: Long = RETRY_MAX_MS
 ) {
-
-    /** What [revokeApp] managed. */
-    enum class RevokeOutcome {
-        /** Every key of the app is revoked. */
-        REVOKED,
-
-        /** The account does not run, so no key is usable; the next connect sweeps the keys. */
-        DEFERRED,
-
-        /** A key revoke failed; a background retry runs while the account runs. */
-        RETRYING
-    }
 
     sealed interface ConnectResult {
         data class Ready(val baseUrl: String, val apiKey: String) : ConnectResult
@@ -92,7 +70,7 @@ class BridgeController(
      * service answers such a caller at once, so it never waits on the mutex or starts an account.
      * [connect] checks the same again under the mutex.
      */
-    fun isApprovedAnywhere(uid: Int): Boolean = approvedAnywhere.approvedAnywhere(uid)
+    fun isApprovedAnywhere(uid: Int): Boolean = callerApprovals.verifiedApprovals(uid).isNotEmpty()
 
     suspend fun connect(uid: Int): ConnectResult = mutex.withLock {
         val result = try {
@@ -105,16 +83,14 @@ class BridgeController(
         }
         // The last client unbound while this connect ran, and the close it triggered may have
         // found nothing to close yet: close whatever this connect opened.
-        if (idle()) closeListenerLocked()
+        if (idle()) withContext(dispatcher) { closeListener() }
         result
     }
 
     private suspend fun connectLocked(uid: Int): ConnectResult {
         // 0. A caller approved under no account learns nothing, and starts nothing. The service
         // turns such callers away before they get here; this catches an approval revoked since.
-        if (!withContext(dispatcher) { approvedAnywhere.approvedAnywhere(uid) }) {
-            // Sweep pending keys if the account runs, but start nothing.
-            withContext(dispatcher) { launcher.runningAccount()?.let { sweepQuietly(it.id) } }
+        if (withContext(dispatcher) { callerApprovals.verifiedApprovals(uid) }.isEmpty()) {
             return ConnectResult.ApprovalRequired
         }
 
@@ -127,7 +103,7 @@ class BridgeController(
 
         return withContext(dispatcher) {
             // 2. Approval, per account.
-            val approval = callerCheck.approved(uid, account.id)
+            val approval = callerApprovals.verifiedApprovals(uid).find { it.accountId == account.id }
             if (approval == null) {
                 sweepQuietly(account.id)
                 return@withContext ConnectResult.ApprovalRequired
@@ -156,17 +132,13 @@ class BridgeController(
 
             // 5b. Defence in depth: the approval may have gone or changed since step 2. Never
             // hand out a key for an approval that no longer exists, or that a re-approval
-            // replaced (another cert, access or grant); revoke what step 5 minted or reused.
-            // The withdrawal or re-approval queued a pending revoke, so a failure here is retried.
+            // replaced (another cert, access or grant); sweep what step 5 minted or reused.
+            // The withdrawal or re-approval queued a pending revoke, but step 3 may already have
+            // cleared it, so queue it again.
             val current = approvals.find(account.id, approval.packageName)
             if (current == null || !current.sameGrantAs(approval)) {
-                val ok = try {
-                    revokeKeysOf(approval.packageName)
-                } catch (e: Exception) {
-                    Log.w(TAG, "revoke after a withdrawn approval failed", e)
-                    false
-                }
-                if (!ok) scheduleRetry(account.id)
+                approvals.queueRevoke(account.id, approval.packageName)
+                sweepQuietly(account.id)
                 return@withContext ConnectResult.ApprovalRequired
             }
 
@@ -248,46 +220,20 @@ class BridgeController(
     }
 
     /**
-     * Withdraws [pkg]'s approval for [accountId] and, when that account runs, revokes every key
-     * of the package: heart rejects a revoked key at once, which cuts off a connected app.
-     * Runs under the connect mutex, so no connect that passed its approval check is mid-way to
-     * minting a key. The pending entry (queued by the revoke) is cleared only when every key
-     * revoke succeeded. When one fails, the pending entry stays and a background retry sweeps
-     * it while the account runs.
+     * Withdraws [pkg]'s approval for [accountId] and, when that account runs, sweeps the revoke
+     * that queued: heart rejects a revoked key at once, which cuts off a connected app.
+     *
+     * Returns true when the revoke is complete: no key of [pkg] is left, or the account does not
+     * run, so no key is usable and the next connect sweeps them. False when a key revoke failed
+     * and a background retry runs while the account runs.
      */
-    suspend fun revokeApp(accountId: String, pkg: String): RevokeOutcome = mutex.withLock {
+    suspend fun revokeApp(accountId: String, pkg: String): Boolean = mutex.withLock {
         withContext(dispatcher) {
             approvals.revoke(accountId, pkg)
-            if (launcher.runningAccount()?.id != accountId) return@withContext RevokeOutcome.DEFERRED
-            val ok = try {
-                revokeKeysOf(pkg)
-            } catch (e: Exception) {
-                Log.w(TAG, "listing keys failed", e)
-                false
-            }
-            if (ok) {
-                approvals.clearPendingRevoke(accountId, pkg)
-                RevokeOutcome.REVOKED
-            } else {
-                scheduleRetry(accountId)
-                RevokeOutcome.RETRYING
-            }
+            if (launcher.runningAccount()?.id != accountId) return@withContext true
+            sweepQuietly(accountId)
+            pkg !in approvals.pendingRevokes(accountId)
         }
-    }
-
-    /** Revokes every gateway key named for [pkg]; false when any single revoke failed. */
-    private fun revokeKeysOf(pkg: String): Boolean {
-        val prefix = KeyNames.prefix(pkg)
-        var ok = true
-        gateway.listApps().filter { it.appName.startsWith(prefix) }.forEach {
-            try {
-                gateway.revokeApp(it.appHash)
-            } catch (e: Exception) {
-                Log.w(TAG, "revoke of ${it.appName} failed", e)
-                ok = false
-            }
-        }
-        return ok
     }
 
     /**
@@ -321,7 +267,7 @@ class BridgeController(
             name = name,
             readWrite = approval.access == Access.READ_WRITE,
             spaceIds = if (approval.grant.allSpaces) null else approval.grant.spaceIds
-        ).appKey
+        )
     }
 
     /** Same pin, access and grant; the approval date does not matter. */
@@ -339,29 +285,23 @@ class BridgeController(
      */
     suspend fun onAllUnbound() {
         mutex.withLock {
-            // Both reads are in memory. Switch threads only when there is work, and only once:
-            // the close must not wait behind a second dispatch.
+            // Both reads are in memory: switch threads only when there is work, and only once.
             val sweepFor = launcher.runningAccount()?.id
                 ?.takeIf { approvals.pendingRevokes(it).isNotEmpty() }
-            closeListenerLocked(sweepFirst = sweepFor, close = idle())
+            if (sweepFor == null && (listenAddr == null || !idle())) return
+            withContext(dispatcher) {
+                sweepFor?.let { sweepQuietly(it) }
+                if (idle()) closeListener()
+            }
         }
     }
 
-    /**
-     * Closes the listener when [close] and one is open. With [sweepFirst], first sweeps that
-     * account's pending revokes, in the same dispatch.
-     */
-    private suspend fun closeListenerLocked(sweepFirst: String? = null, close: Boolean = true) {
-        val closing = close && listenAddr != null
-        if (closing) listenAddr = null
-        if (!closing && sweepFirst == null) return
+    /** Closes heart's listener if one is open. Call under the mutex, on [dispatcher]. */
+    private fun closeListener() {
+        if (listenAddr == null) return
+        listenAddr = null
         try {
-            withContext(dispatcher) {
-                sweepFirst?.let { sweepQuietly(it) }
-                if (closing) gateway.setListenAddr("")
-            }
-        } catch (e: CancellationException) {
-            throw e
+            gateway.setListenAddr("")
         } catch (e: Exception) {
             Log.w(TAG, "closing the listener failed", e)
         }

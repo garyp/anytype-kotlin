@@ -137,26 +137,17 @@ class AnytypeBridge(
         return conn
     }
 
-    private fun doBind(intent: Intent, conn: ServiceConnection): Boolean {
-        val executor = ContextCompat.getMainExecutor(context)
-        return when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> context.bindService(
-                intent,
-                Context.BindServiceFlags.of(
-                    (BIND_AUTO_CREATE or Context.BIND_INCLUDE_CAPABILITIES).toLong()
-                ),
-                executor,
-                conn
-            )
-            Build.VERSION.SDK_INT >= 29 -> context.bindService(
+    private fun doBind(intent: Intent, conn: ServiceConnection): Boolean =
+        if (Build.VERSION.SDK_INT >= 29) {
+            context.bindService(
                 intent,
                 BIND_AUTO_CREATE or Context.BIND_INCLUDE_CAPABILITIES,
-                executor,
+                ContextCompat.getMainExecutor(context),
                 conn
             )
-            else -> context.bindService(intent, conn, BIND_AUTO_CREATE)
+        } else {
+            context.bindService(intent, conn, BIND_AUTO_CREATE)
         }
-    }
 
     /**
      * Unbinds [conn] if it is still the current binding, and fails a [connect] that waits for it
@@ -199,14 +190,11 @@ class AnytypeBridge(
         else -> "error $code"
     }
 
-    /** Unbinds from the service and fails a [connect] that waits for the binding. */
+    /**
+     * Unbinds from the service and fails a [connect] that waits for the binding. The next
+     * [connect] binds afresh.
+     */
     fun close() = release(synchronized(lock) { connection }, null)
-
-    /** Call when the endpoint was rejected (e.g. key rotated): the next [connect] binds afresh. */
-    fun markStale() = release(
-        synchronized(lock) { connection },
-        BridgeException.Failed(IApiBridge.INTERNAL, "endpoint marked stale")
-    )
 
     /** Intent to launch the approval screen of the Anytype app. */
     fun approvalIntent(): Intent = Intent(APPROVE_ACTION).setPackage(targetPackage)

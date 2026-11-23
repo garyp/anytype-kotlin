@@ -10,7 +10,7 @@ import org.mockito.kotlin.mock
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -29,43 +29,49 @@ class CallerVerifierTest {
         Approval("A", pkg, cert, Access.READ_WRITE, Grant.ALL, 1L)
     )
 
+    private val aabb = byteArrayOf(0xaa.toByte(), 0xbb.toByte())
+
     @Test
     fun matchingCertIsApproved() {
         approve("com.x", "aabb")
-        val v = CallerVerifier(pmWith(10, "com.x"), approvals) { _, b -> b.contentEquals(byteArrayOf(0xaa.toByte(), 0xbb.toByte())) }
-        assertEquals("com.x", v.approvedCaller(10, "A")?.packageName)
+        val v = CallerVerifier(pmWith(10, "com.x"), approvals) { _, b -> b.contentEquals(aabb) }
+        assertEquals(listOf("com.x"), v.verifiedApprovals(10).map { it.packageName })
     }
 
     @Test
     fun changedCertIsNotApproved() {
         approve("com.x", "aabb")
         val v = CallerVerifier(pmWith(10, "com.x"), approvals) { _, _ -> false }
-        assertNull(v.approvedCaller(10, "A"))
+        assertTrue(v.verifiedApprovals(10).isEmpty())
     }
 
     @Test
     fun sharedUidPicksApprovedPackage() {
         approve("com.b", "aabb")
         val v = CallerVerifier(pmWith(10, "com.a", "com.b"), approvals) { _, _ -> true }
-        assertEquals("com.b", v.approvedCaller(10, "A")?.packageName)
+        assertEquals(listOf("com.b"), v.verifiedApprovals(10).map { it.packageName })
     }
 
     @Test
-    fun unknownUidIsNull() {
+    fun unknownUidHasNoApprovals() {
         approve("com.x", "aabb")
         val v = CallerVerifier(pmWith(10, "com.x"), approvals) { _, _ -> true }
-        assertNull(v.approvedCaller(99, "A"))
+        assertTrue(v.verifiedApprovals(99).isEmpty())
     }
 
     @Test
-    fun approvedAnywhereMatchesAnyAccountWithVerifiedCert() {
+    fun otherPackageHasNoApprovals() {
+        approve("com.x", "aabb")
+        val v = CallerVerifier(pmWith(10, "com.y"), approvals) { _, _ -> true }
+        assertTrue(v.verifiedApprovals(10).isEmpty())
+    }
+
+    @Test
+    fun approvalsUnderEveryAccountAreReturned() {
+        approvals.approve(Approval("A", "com.x", "aabb", Access.READ_WRITE, Grant.ALL, 1L))
         approvals.approve(Approval("B", "com.x", "aabb", Access.READ_ONLY, Grant.ALL, 1L))
-        val ok = CallerVerifier(pmWith(10, "com.x"), approvals) { _, b -> b.contentEquals(byteArrayOf(0xaa.toByte(), 0xbb.toByte())) }
-        kotlin.test.assertTrue(ok.approvedAnywhere(10))
-        val wrongCert = CallerVerifier(pmWith(10, "com.x"), approvals) { _, _ -> false }
-        kotlin.test.assertFalse(wrongCert.approvedAnywhere(10))
-        val otherPkg = CallerVerifier(pmWith(10, "com.y"), approvals) { _, _ -> true }
-        kotlin.test.assertFalse(otherPkg.approvedAnywhere(10))
+        val v = CallerVerifier(pmWith(10, "com.x"), approvals) { _, b -> b.contentEquals(aabb) }
+        assertEquals(setOf("A", "B"), v.verifiedApprovals(10).map { it.accountId }.toSet())
     }
 
     private fun pmWith(uid: Int, vararg pkgs: String): PackageManager {

@@ -39,13 +39,8 @@ class AnytypeBridgeTest {
 
     private val app: Application = ApplicationProvider.getApplicationContext()
 
-    /**
-     * Robolectric 4.18 shadows only bindService(Intent, int, Executor, ServiceConnection) and the
-     * 3-arg overload; the API 33 BindServiceFlags overload falls through to the real ContextImpl
-     * and returns false. This wrapper forwards it to the shadowed overload, so production code
-     * can keep using BindServiceFlags.
-     */
-    private class FlagsForwardingContext(base: Context) : ContextWrapper(base) {
+    /** Records each bind, and can make one throw, before Robolectric's shadow handles it. */
+    private class RecordingContext(base: Context) : ContextWrapper(base) {
         var lastFlags = 0
         var lastConnection: ServiceConnection? = null
         var bindCount = 0
@@ -53,24 +48,22 @@ class AnytypeBridgeTest {
 
         override fun bindService(
             service: Intent,
-            flags: Context.BindServiceFlags,
+            flags: Int,
             executor: Executor,
             conn: ServiceConnection
         ): Boolean {
-            // BindServiceFlags.getValue() is a hidden API, so read it reflectively.
-            val value = Context.BindServiceFlags::class.java.getMethod("getValue").invoke(flags) as Long
-            lastFlags = value.toInt()
+            lastFlags = flags
             lastConnection = conn
             bindCount++
             bindThrows?.let { throw it }
-            return baseContext.bindService(service, value.toInt(), executor, conn)
+            return super.bindService(service, flags, executor, conn)
         }
 
         // AnytypeBridge stores context.applicationContext; keep it pointing at this wrapper.
         override fun getApplicationContext(): Context = this
     }
 
-    private val ctx = FlagsForwardingContext(app)
+    private val ctx = RecordingContext(app)
 
     /**
      * Runs [block] off the main thread while this thread keeps idling the (paused) main looper,
@@ -138,7 +131,7 @@ class AnytypeBridgeTest {
         val bridge = AnytypeBridge(ctx)
         val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper { bridge.connect() } }
         assertEquals(IApiBridge.INTERNAL, e.code)
-        assertEquals("malformed reply", e.msg)
+        assertTrue(e.message!!.endsWith(": malformed reply"))
         bridge.close()
     }
 
@@ -149,7 +142,7 @@ class AnytypeBridgeTest {
         val bridge = AnytypeBridge(ctx)
         val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper { bridge.connect() } }
         assertEquals(IApiBridge.INTERNAL, e.code)
-        assertEquals("no reply: Anytype bridge too old or incompatible", e.msg)
+        assertTrue(e.message!!.endsWith(": no reply: Anytype bridge too old or incompatible"))
         bridge.close()
     }
 
@@ -312,12 +305,12 @@ class AnytypeBridgeTest {
     }
 
     @Test(timeout = 30_000)
-    fun connectAfterMarkStaleBindsAgain() {
+    fun connectAfterCloseBindsAgain() {
         install { ApiEndpoint(IApiBridge.OK, "u", "k") }
         val bridge = AnytypeBridge(ctx)
         connectWithLooper { bridge.connect() }
         val first = ctx.bindCount
-        bridge.markStale()
+        bridge.close()
         assertEquals(Endpoint("u", "k"), connectWithLooper { bridge.connect() })
         assertEquals(first + 1, ctx.bindCount)
         bridge.close()

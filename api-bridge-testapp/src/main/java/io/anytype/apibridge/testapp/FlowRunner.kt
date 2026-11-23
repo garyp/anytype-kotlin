@@ -48,7 +48,9 @@ class FlowRunner(
     suspend fun runAll(): Boolean {
         return try {
             val endpoint = step("connect") { source.endpoint() }
-            val spaceId = step("v2 spaces") { firstSpace(endpoint) }
+            val spaceId = step("v2 spaces") {
+                listSpaces(endpoint).keys.firstOrNull() ?: throw StepFailed("no spaces granted")
+            }
             mcpHttpClient().use { http ->
                 val mcp = Client(Implementation(name = "api-bridge-testapp", version = "1"))
                 try {
@@ -103,6 +105,7 @@ class FlowRunner(
 
     private fun status(endpoint: Endpoint, path: String): Int = get(endpoint, path).use { it.code }
 
+    /** REST: a plain OkHttp GET with the bearer key. OkHttp sends no Origin header (heart: 403). */
     private fun get(endpoint: Endpoint, path: String) = rest.newCall(
         Request.Builder()
             .url(endpoint.baseUrl.trimEnd('/') + path)
@@ -139,22 +142,6 @@ class FlowRunner(
             log("FAIL $name: ${e.message ?: e.javaClass.simpleName}")
             throw StepFailed(e.message.orEmpty())
         }
-    }
-
-    /** REST: a plain OkHttp GET with the bearer key. OkHttp sends no Origin header (heart: 403). */
-    private fun firstSpace(endpoint: Endpoint): String {
-        val request = Request.Builder()
-            .url(endpoint.baseUrl.trimEnd('/') + "/v2/spaces")
-            .header("Authorization", "Bearer ${endpoint.apiKey}")
-            .build()
-        val body = rest.newCall(request).execute().use { resp ->
-            val text = resp.body.string()
-            if (!resp.isSuccessful) throw StepFailed("HTTP ${resp.code}: ${text.take(200)}")
-            text
-        }
-        val data = JSONObject(body).optJSONArray("data") ?: JSONArray()
-        if (data.length() == 0) throw StepFailed("no spaces granted")
-        return data.getJSONObject(0).getString("id")
     }
 
     // Argument names (space, type, name, markdown, query, object) are those of heart's small tier.

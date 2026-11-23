@@ -7,5 +7,5 @@ sealed class BridgeException(message: String?) : Exception(message) {
     /** [pkg] is not signed with the certificate the app pinned; the bridge did not bind. */
     class Untrusted(val pkg: String) : BridgeException("Not signed with the expected certificate: $pkg")
     /** [code] is one of the error codes on [io.anytype.apibridge.IApiBridge]. */
-    class Failed(val code: Int, val msg: String) : BridgeException("Bridge failed ($code): $msg")
+    class Failed(val code: Int, detail: String) : BridgeException("Bridge failed ($code): $detail")
 }

@@ -44,9 +44,9 @@ class ApiBridgeServiceTest {
 
         override fun listApps(): List<GatewayApp> = emptyList()
 
-        override fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): GatewayApp {
+        override fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): String {
             seq++
-            return GatewayApp("hash$seq", name, "key$seq", seq.toLong())
+            return "key$seq"
         }
 
         override fun revokeApp(appHash: String) = Unit
@@ -75,8 +75,7 @@ class ApiBridgeServiceTest {
         ApiBridge.resetForTest()
         gateway = FakeGateway()
         approved.clear()
-        ApiBridge.callerCheckOverride = CallerCheck { uid, _ -> approved[uid] }
-        ApiBridge.approvedAnywhereOverride = ApprovedAnywhere { uid -> approved.containsKey(uid) }
+        ApiBridge.callerApprovalsOverride = CallerApprovals { uid -> listOfNotNull(approved[uid]) }
         service = Robolectric.buildService(ApiBridgeService::class.java, intent).create()
     }
 

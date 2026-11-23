@@ -10,7 +10,6 @@ import com.anytypeio.anytype.core_models.restrictions.SpaceStatus
 import com.anytypeio.anytype.feature_os_widgets.presentation.MiddlewareLaunchResult
 import com.anytypeio.anytype.feature_os_widgets.presentation.awaitFirstSpacesEmission
 import com.anytypeio.anytype.feature_os_widgets.presentation.launchMiddlewareForConfig
-import com.anytypeio.anytype.middleware.localapi.LocalApiApp
 import com.anytypeio.anytype.middleware.localapi.LocalApiControl
 import dagger.Lazy
 import javax.inject.Inject
@@ -24,9 +23,10 @@ import timber.log.Timber
  * Hands the app's middleware to [ApiBridge].
  *
  * [install] must run exactly once per process, synchronously in `Application.onCreate`, so the
- * bridge service never sees a half-installed bridge. It does no disk or network I/O: every
- * adapter holds its dependencies through [Lazy] and touches them only when the bridge calls it,
- * which the bridge does off the main thread.
+ * bridge service never sees a half-installed bridge. It does no disk or network I/O: the
+ * adapters hold their middleware dependencies through [Lazy] (and [LocalApiControl] is a plain
+ * wrapper over the gomobile calls), touching them only when the bridge calls them, which the
+ * bridge does off the main thread.
  */
 class ApiBridgeInstaller @Inject constructor(
     private val gateway: LocalApiGateway,
@@ -40,24 +40,19 @@ class ApiBridgeInstaller @Inject constructor(
 
 /** [LocalApiGateway] over heart's local JSON API control calls. */
 class LocalApiControlGateway(
-    private val control: Lazy<LocalApiControl>
+    private val control: LocalApiControl
 ) : LocalApiGateway {
 
-    override fun setListenAddr(addr: String): String? = control.get().setListenAddr(addr)
+    override fun setListenAddr(addr: String): String? = control.setListenAddr(addr)
 
-    override fun listApps(): List<GatewayApp> = control.get().listApps().map { it.toGatewayApp() }
+    override fun listApps(): List<GatewayApp> = control.listApps().map {
+        GatewayApp(appHash = it.appHash, appName = it.appName, appKey = it.appKey, createdAt = it.createdAt)
+    }
 
-    override fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): GatewayApp =
-        control.get().createApp(name, readWrite, spaceIds).toGatewayApp()
+    override fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): String =
+        control.createApp(name, readWrite, spaceIds)
 
-    override fun revokeApp(appHash: String) = control.get().revokeApp(appHash)
-
-    private fun LocalApiApp.toGatewayApp() = GatewayApp(
-        appHash = appHash,
-        appName = appName,
-        appKey = appKey,
-        createdAt = createdAt
-    )
+    override fun revokeApp(appHash: String) = control.revokeApp(appHash)
 }
 
 /**

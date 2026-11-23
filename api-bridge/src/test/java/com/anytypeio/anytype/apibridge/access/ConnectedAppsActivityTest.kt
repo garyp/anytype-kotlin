@@ -170,6 +170,8 @@ class ConnectedAppsActivityTest {
     fun revokeRemovesApprovalAndKeys() {
         approvals.approve(approval("com.one"))
         approvals.approve(approval("com.two"))
+        // com.two's key was minted after its approval: nothing of it is pending revocation.
+        approvals.clearPendingRevoke("A", "com.two")
         gateway.apps.add(app("com.one", "h1"))
         gateway.apps.add(app("com.one", "h1b").copy(appName = KeyNames.prefix("com.one") + "old"))
         gateway.apps.add(app("com.two", "h2"))
