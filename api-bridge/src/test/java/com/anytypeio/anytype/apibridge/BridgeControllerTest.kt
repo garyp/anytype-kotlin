@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -63,8 +64,12 @@ class BridgeControllerTest {
         override fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): String {
             onCreate?.invoke()
             created.add(Triple(name, readWrite, spaceIds))
-            return add(name).appKey
+            return add(name).appKey.also { onCreated?.invoke() }
         }
+
+        /** Runs after the key exists, before the connect re-checks the approval. */
+        @Volatile
+        var onCreated: (() -> Unit)? = null
 
         override fun revokeApp(appHash: String) {
             if (failRevoke) throw IOException("revoke failed")
@@ -189,25 +194,45 @@ class BridgeControllerTest {
         assertEquals(setOf("com.x"), approvals.pendingRevokes("A"))
     }
 
+    private fun ioController() = BridgeController(
+        gateway = gateway, launcher = launcher, approvals = approvals,
+        callerApprovals = callerApprovals,
+        idle = { false }, probe = { true }, dispatcher = Dispatchers.IO,
+        retryScope = CoroutineScope(Dispatchers.IO)
+    )
+
+    /**
+     * A revoke does not wait for a connect. One that lands before the key exists is caught by
+     * the connect's re-check of the approval, which revokes the new key.
+     */
     @Test
-    fun revokeDuringConnectLeavesNoKey() = runBlocking {
+    fun revokeBeforeKeyIsMintedDoesNotWaitAndLeavesNoKey() = runBlocking {
         approve(1000, approval())
         val inCreate = CountDownLatch(1)
         val release = CountDownLatch(1)
         gateway.onCreate = { inCreate.countDown(); release.await(5, TimeUnit.SECONDS) }
-        val c = BridgeController(
-            gateway = gateway, launcher = launcher, approvals = approvals,
-            callerApprovals = callerApprovals,
-            idle = { false }, probe = { true }, dispatcher = Dispatchers.IO,
-            retryScope = CoroutineScope(Dispatchers.IO)
-        )
+        val c = ioController()
         val connect = async(Dispatchers.Default) { c.connect(1000) }
         assertTrue(inCreate.await(5, TimeUnit.SECONDS))
-        val revoke = async(Dispatchers.Default) { c.revokeApp("A", "com.x") }
-        Thread.sleep(200)
+        // Completes while the connect is still blocked minting the key.
+        assertTrue(withTimeout(2_000) { c.revokeApp("A", "com.x") })
         release.countDown()
-        connect.await()
-        assertTrue(revoke.await())
+        assertEquals(BridgeController.ConnectResult.ApprovalRequired, connect.await())
+        assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.x")) })
+        assertTrue(approvals.pendingRevokes("A").isEmpty())
+    }
+
+    /** A revoke that lands after the key exists finds the key and revokes it itself. */
+    @Test
+    fun revokeAfterKeyIsMintedLeavesNoKey() = runBlocking {
+        approve(1000, approval())
+        val c = ioController()
+        gateway.onCreated = {
+            gateway.onCreated = null
+            // A revoke that waited for the connect would never finish here.
+            runBlocking { assertTrue(withTimeout(2_000) { c.revokeApp("A", "com.x") }) }
+        }
+        c.connect(1000)
         assertTrue(gateway.apps.none { it.appName.startsWith(KeyNames.prefix("com.x")) })
         assertTrue(approvals.pendingRevokes("A").isEmpty())
     }

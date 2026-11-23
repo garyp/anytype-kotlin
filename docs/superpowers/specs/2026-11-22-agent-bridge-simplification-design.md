@@ -129,3 +129,21 @@ was more complicated than it needed to be, or in the wrong place:
 
 - Changing the controller, approval, consent or security behaviour.
 - Upstreaming. The fork's commits are kept small, so upstreaming stays possible.
+
+## Follow-up (2026-11-23): revoke takes no lock
+
+The user asked to simplify the locking: approvals and revokes come only from the user, so no
+app can force a race, and a short window in which a revoke and a connect overlap is acceptable
+as long as the result stays coherent and no revoked app keeps a working key for long.
+
+- `revokeApp` no longer takes the controller mutex, so it never waits behind a connect that is
+  starting the account. The order of the steps keeps it safe: a revoke removes the approval
+  before it lists the keys, and a connect mints the key before it re-checks the approval
+  (step 5b). Whichever runs first, one side sees the new key and revokes it. At worst a connect
+  hands out a key that the revoke cuts off a moment later.
+- The mutex still serializes connects and the unbind close, which keeps the listener and key
+  state whole (one bind at a time, no duplicate keys, no close in the middle of a connect), and
+  the background revoke retry, where the lock costs nothing and keeps a sweep from revoking a
+  key that a connect is about to hand out.
+- The approval check at the start of a connect stays: it is what keeps an unapproved caller
+  from starting the account, not a guard against revokes.

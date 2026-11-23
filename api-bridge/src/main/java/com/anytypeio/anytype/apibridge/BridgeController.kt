@@ -18,9 +18,17 @@ import kotlinx.coroutines.withContext
  * Every connect runs under one [Mutex]: turn away a caller approved under no account at all
  * (it must not start the account or learn its state), start the account, check the caller's
  * approval for that account, sweep keys pending revocation, make sure heart's local API listens,
- * and hand out the caller's key. [revokeApp] runs under the same mutex, so no connect that passed
- * its approval check is mid-way to minting a key. Blocking work (gateway, approvals store,
- * [probe]) runs on [dispatcher].
+ * and hand out the caller's key. The mutex keeps the listener and key state whole: one bind at a
+ * time, no duplicate keys, and no close of the listener in the middle of a connect. Blocking work
+ * (gateway, approvals store, [probe]) runs on [dispatcher].
+ *
+ * [revokeApp] takes no lock, so it never waits behind a connect that is starting the account.
+ * It still cannot leave a revoked app with a working key, because of the order of the steps on
+ * each side: a revoke removes the approval before it lists the keys, and a connect mints the
+ * key before it re-checks the approval (step 5b). Whichever runs first, one side sees the new
+ * key: either the revoke lists it and revokes it, or the connect finds the approval gone and
+ * revokes it. A connect may still hand out a key that the revoke cuts off a moment later, which
+ * is the outcome the user asked for.
  *
  * Every key revoke goes through one sweep of the account's pending revokes: [AppApprovals]
  * queues one for a package on every approval and revocation, and the sweep clears it only once
@@ -202,6 +210,8 @@ class BridgeController(
                 var wait = retryStartDelayMs
                 while (true) {
                     delay(wait)
+                    // Under the mutex, unlike revokeApp: a sweep here that ran between a
+                    // connect's own sweep and its return could revoke the key it hands out.
                     val done = mutex.withLock {
                         withContext(dispatcher) {
                             if (launcher.runningAccount()?.id != accountId) {
@@ -227,13 +237,12 @@ class BridgeController(
      * run, so no key is usable and the next connect sweeps them. False when a key revoke failed
      * and a background retry runs while the account runs.
      */
-    suspend fun revokeApp(accountId: String, pkg: String): Boolean = mutex.withLock {
-        withContext(dispatcher) {
-            approvals.revoke(accountId, pkg)
-            if (launcher.runningAccount()?.id != accountId) return@withContext true
-            sweepQuietly(accountId)
-            pkg !in approvals.pendingRevokes(accountId)
-        }
+    suspend fun revokeApp(accountId: String, pkg: String): Boolean = withContext(dispatcher) {
+        // Withdraw before sweeping: see the class comment for why no lock is needed.
+        approvals.revoke(accountId, pkg)
+        if (launcher.runningAccount()?.id != accountId) return@withContext true
+        sweepQuietly(accountId)
+        pkg !in approvals.pendingRevokes(accountId)
     }
 
     /**
