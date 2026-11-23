@@ -1,22 +1,17 @@
 # Fork-only workflow: builds signed release APKs of this fork and publishes them as a GitHub
 # pre-release, so the app can be installed (and kept up to date) with Obtainium.
 #
-# It reuses upstream's release build: the release signing config in app/build.gradle,
-# scripts/release/setup-store.sh, scripts/release/apk.sh and the ABI splits. Everything fork-specific
-# below (version, application ID, ABIs, Firebase package name) is edited in the CI checkout only;
-# nothing is committed.
+# It follows upstream's build-github-release-with-apks.yml step by step; keep the two in sync when
+# upstream changes. The steps that differ are marked "Fork:". Everything fork-specific (version,
+# application ID, ABIs, Firebase package name) is edited in the CI checkout only; nothing is
+# committed.
 #
 # Required repository secrets (Settings > Secrets and variables > Actions):
-#   FORK_SIGNING_KEY        base64-encoded keystore (base64 -w0 garyp-release.jks)
+#   FORK_SIGNING_KEY        base64-encoded keystore
 #   FORK_KEY_ALIAS          key alias in the keystore
 #   FORK_KEY_STORE_PASSWORD keystore password
 #   FORK_KEY_PASSWORD       key password
 # Keep the keystore safe: Android only installs updates signed with the same key.
-#
-# Heart comes from the garyp/anytype-heart package registry. Maven packages take their permissions
-# from the repository that publishes them, so set the secret HEART_PACKAGES_TOKEN to a personal
-# access token (classic) with only the read:packages scope. Without it the workflow tries its own
-# token, which may be refused for another repository's package.
 #
 # Versioning follows upstream's version on the built ref and this workflow's run number, so it is
 # deterministic (re-running a run produces the same version):
@@ -40,6 +35,7 @@ on:
   push:
     branches:
       - main
+      - ccr-f214df8b-69606d # TEMPORARY: tests heart access with the workflow token
 
 permissions:
   contents: read
@@ -49,79 +45,81 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build, sign and publish release APKs
+  build-and-release:
+    runs-on: ubuntu-latest
+    name: Build and Upload to GitHub Release
     # Never run in the upstream repository, even if this file ends up there.
     if: ${{ github.repository_owner != 'anyproto' }}
-    runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: write # create releases
       packages: read # heart from the garyp/anytype-heart registry
     env:
-      SOURCE_REF: ${{ inputs.ref || github.sha }}
       FORK_APPLICATION_ID: com.realify.gary.anytype.app
       FORK_ABIS: arm64-v8a x86_64
-    steps:
-      - name: Check signing secrets
-        env:
-          SIGNING_KEY: ${{ secrets.FORK_SIGNING_KEY }}
-          KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
-          KEY_STORE_PASSWORD: ${{ secrets.FORK_KEY_STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
-        run: |
-          for name in SIGNING_KEY KEY_ALIAS KEY_STORE_PASSWORD KEY_PASSWORD; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::Repository secret FORK_${name} is not set."
-              exit 1
-            fi
-          done
 
-      - name: Checkout the repo
-        uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
         with:
-          ref: ${{ env.SOURCE_REF }}
-          fetch-depth: 1
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
-      # As upstream's release workflows.
       - uses: nttld/setup-ndk@v1
         with:
           ndk-version: r23c
           link-to-sdk: true
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v3
         with:
-          distribution: zulu
+          distribution: 'zulu'
           java-version: 17
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Grant Gradle permission
+        run: chmod +x ./gradlew
 
-      - name: Write build properties
+      # Fork: middleware2.sh requires Anytype's own keys. Heart comes from the garyp/anytype-heart
+      # registry, read with the workflow's token; analytics and crash reporting stay off.
+      - name: Setup middleware
         env:
           ACTOR: ${{ github.actor }}
-          TOKEN: ${{ secrets.HEART_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # settings.gradle reads the package registries' credentials from github.properties.
           printf 'gpr.usr=%s\ngpr.key=%s\n' "$ACTOR" "$TOKEN" > github.properties
-          # No analytics or crash reporting: empty keys leave Amplitude and Sentry off.
           printf 'amplitude.debug=""\namplitude.release=""\nsentry_dsn=\n' > apikeys.properties
 
-      - name: Set up the signing key
+          # Fail here, not 20 minutes into the build, if the token can't read heart.
+          HEART=$(sed -n -E 's/^middlewareVersion = "(.+)"$/\1/p' gradle/libs.versions.toml)
+          POM="https://maven.pkg.github.com/garyp/anytype-heart/io/anyproto/anytype-heart-android/${HEART}/anytype-heart-android-${HEART}.pom"
+          STATUS=$(curl -sS -o /dev/null -w '%{http_code}' -u "${ACTOR}:${TOKEN}" "$POM")
+          echo "Heart ${HEART}: HTTP ${STATUS}"
+          if [[ "$STATUS" != 200 ]]; then
+            echo "::error::The workflow token can't read heart ${HEART} from garyp/anytype-heart (HTTP ${STATUS})."
+            exit 1
+          fi
+
+      # Fork: the keystore comes from a secret instead of the encrypted file in the repository.
+      - name: Decrypt secrets
         env:
           SIGNING_KEY: ${{ secrets.FORK_SIGNING_KEY }}
-          KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
-          KEY_STORE_PASSWORD: ${{ secrets.FORK_KEY_STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.FORK_KEY_PASSWORD }}
         run: |
-          # The release signing config in app/build.gradle reads this keystore and signing.properties.
+          if [[ -z "$SIGNING_KEY" ]]; then
+            echo "::error::Repository secret FORK_SIGNING_KEY is not set."
+            exit 1
+          fi
           echo "$SIGNING_KEY" | base64 -d > scripts/release/app-release.jks
-          ./scripts/release/setup-store.sh "$KEY_ALIAS" "$KEY_PASSWORD" "$KEY_STORE_PASSWORD"
+
+      - name: Setup keystore
+        env:
+          RELEASE_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          RELEASE_KEY_PWD: ${{ secrets.FORK_KEY_PASSWORD }}
+          RELEASE_STORE_PWD: ${{ secrets.FORK_KEY_STORE_PASSWORD }}
+        run: ./scripts/release/setup-store.sh "$RELEASE_KEY_ALIAS" "$RELEASE_KEY_PWD" "$RELEASE_STORE_PWD"
 
       - name: Prepare Android Manifest for APKs
         run: ./scripts/release/apk.sh
 
-      - name: Set version, application ID and ABIs
+      - name: "Fork: Set version, application ID and ABIs"
         id: version
         env:
           RUN_NUMBER: ${{ github.run_number }}
@@ -167,25 +165,30 @@ jobs:
           {
             echo "code=${VERSION_CODE}"
             echo "name=${VERSION_NAME}"
-            echo "upstream_code=${UPSTREAM_CODE}"
-            echo "upstream_name=${UPSTREAM_NAME}"
+            echo "commit=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
           echo "Upstream ${UPSTREAM_NAME} (${UPSTREAM_CODE}) -> ${VERSION_NAME} (${VERSION_CODE})"
 
       - name: Build release APKs
         run: ./gradlew :app:assembleRelease -PenableAbiSplits=true -Papp.applicationId="$FORK_APPLICATION_ID"
 
-      - name: Verify and collect APKs
+      - name: Prepare artefacts
+        run: ./scripts/release/prepare-release-artefacts.sh
+
+      - name: List prepared files
+        run: ls -lh app/build/outputs/apk/release/release-artefacts/
+
+      - name: "Fork: Verify APKs"
         env:
           EXPECTED_CODE: ${{ steps.version.outputs.code }}
           EXPECTED_NAME: ${{ steps.version.outputs.name }}
         run: |
           AAPT2="$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort -V | tail -n 1)"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)"
-          mkdir -p uploads
+          DIR=app/build/outputs/apk/release/release-artefacts
           for ABI in $FORK_ABIS; do
             # app/build.gradle names release APKs anytype-<versionName>-<abi>.apk.
-            APK="app/build/outputs/apk/release/anytype-${EXPECTED_NAME}-${ABI}.apk"
+            APK="${DIR}/anytype-${EXPECTED_NAME}-${ABI}.apk"
             BADGING=$("$AAPT2" dump badging "$APK")
             echo "$BADGING" | head -n 1
             [[ "$BADGING" == *"name='${FORK_APPLICATION_ID}'"* ]] || { echo "::error::Unexpected package in $APK"; exit 1; }
@@ -193,36 +196,27 @@ jobs:
             [[ "$BADGING" == *"versionName='${EXPECTED_NAME}'"* ]] || { echo "::error::Unexpected versionName in $APK"; exit 1; }
             [[ "$BADGING" == *"native-code: '${ABI}'"* ]] || { echo "::error::Unexpected ABIs in $APK"; exit 1; }
             "$APKSIGNER" verify "$APK"
-            cp "$APK" uploads/
           done
-          ls -l uploads/
+          [[ $(ls "$DIR" | wc -l) == $(wc -w <<< "$FORK_ABIS") ]] || { echo "::error::Unexpected files in $DIR"; exit 1; }
 
-      - name: Publish pre-release
+      # Fork: a pre-release tagged with the versionName, so Obtainium can pick it up. A re-run
+      # produces the same version and replaces the release's APKs.
+      - name: Create and Upload GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.name }}
+          target_commitish: ${{ steps.version.outputs.commit }}
+          name: Anytype garyp build ${{ steps.version.outputs.name }}
+          body: >-
+            Unofficial build of ${{ steps.version.outputs.commit }}, versionCode
+            ${{ steps.version.outputs.code }}, application ID `${{ env.FORK_APPLICATION_ID }}`.
+          prerelease: true
+          files: app/build/outputs/apk/release/release-artefacts/*
         env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION_NAME: ${{ steps.version.outputs.name }}
-          VERSION_CODE: ${{ steps.version.outputs.code }}
-          UPSTREAM_NAME: ${{ steps.version.outputs.upstream_name }}
-          UPSTREAM_CODE: ${{ steps.version.outputs.upstream_code }}
-          REPOSITORY: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          COMMIT_SHA=$(git rev-parse HEAD)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          # Re-running a run produces the same version, so replace the APKs of an existing release.
-          if gh release view "${VERSION_NAME}" --repo "${REPOSITORY}" > /dev/null 2>&1; then
-            gh release upload "${VERSION_NAME}" --repo "${REPOSITORY}" --clobber uploads/*.apk
-            exit 0
-          fi
-
-          gh release create "${VERSION_NAME}" \
-            --repo "${REPOSITORY}" \
-            --target "${COMMIT_SHA}" \
-            --prerelease \
-            --title "Anytype garyp build ${VERSION_NAME}" \
-            --notes "Unofficial build of \`${SOURCE_REF}\` (${COMMIT_SHA}). versionCode ${VERSION_CODE}; upstream ${UPSTREAM_NAME} (${UPSTREAM_CODE}); application ID \`${FORK_APPLICATION_ID}\`. Built by ${RUN_URL}" \
-            uploads/*.apk
-
-      - name: Remove the signing key
+      - name: Clean secrets
         if: always()
-        run: rm -f scripts/release/app-release.jks signing.properties github.properties
+        run: |
+          ./scripts/release/clean-secrets.sh
+          rm -f github.properties
