@@ -13,9 +13,10 @@
 #   FORK_KEY_PASSWORD       key password
 # Keep the keystore safe: Android only installs updates signed with the same key.
 #
-# Heart comes from the garyp/anytype-heart package registry. This workflow reads it with its own
-# token, so the package must grant this repository read access (package settings, Manage Actions
-# access).
+# Heart comes from the garyp/anytype-heart package registry. Maven packages take their permissions
+# from the repository that publishes them, so set the secret HEART_PACKAGES_TOKEN to a personal
+# access token (classic) with only the read:packages scope. Without it the workflow tries its own
+# token, which may be refused for another repository's package.
 #
 # Versioning follows upstream's version on the built ref and this workflow's run number, so it is
 # deterministic (re-running a run produces the same version):
@@ -99,7 +100,7 @@ jobs:
       - name: Write build properties
         env:
           ACTOR: ${{ github.actor }}
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.HEART_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           # settings.gradle reads the package registries' credentials from github.properties.
           printf 'gpr.usr=%s\ngpr.key=%s\n' "$ACTOR" "$TOKEN" > github.properties
