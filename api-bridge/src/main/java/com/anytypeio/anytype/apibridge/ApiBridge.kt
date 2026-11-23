@@ -53,19 +53,11 @@ object ApiBridge {
     @Volatile
     internal var unbindDispatcher: CoroutineDispatcher = Dispatchers.IO
 
-    /** Runs unbind closes and revoke retries; outlives every service and screen. */
+    /** Runs connects, unbind closes and revoke retries; outlives every service and screen. */
     internal val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
-     * How long a binder thread waits for a connect. The connect itself goes on in
-     * [backgroundScope] under the controller mutex; a caller that gives up gets INTERNAL.
-     */
-    @VisibleForTesting
-    @Volatile
-    internal var connectTimeoutMs: Long = CONNECT_TIMEOUT_MS
-
-    /**
-     * The connect in flight per calling uid. A second call from the same uid awaits the same
+     * The connect in flight per calling uid. A second call from the same uid gets the same
      * result instead of queueing another connect, so one uid holds at most one connect at a time.
      */
     internal val inFlightConnects = ConcurrentHashMap<Int, Deferred<BridgeController.ConnectResult>>()
@@ -118,12 +110,9 @@ object ApiBridge {
         controller = null
         callerApprovalsOverride = null
         unbindDispatcher = Dispatchers.IO
-        connectTimeoutMs = CONNECT_TIMEOUT_MS
         activeBindings.set(0)
         // Revoke retries of an earlier test's controller would sweep this test's store.
         backgroundScope.coroutineContext.cancelChildren()
         inFlightConnects.clear()
     }
-
-    internal const val CONNECT_TIMEOUT_MS = 45_000L
 }

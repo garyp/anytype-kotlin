@@ -147,3 +147,36 @@ as long as the result stays coherent and no revoked app keeps a working key for 
   key that a connect is about to hand out.
 - The approval check at the start of a connect stays: it is what keeps an unapproved caller
   from starting the account, not a guard against revokes.
+
+## Follow-up (2026-11-23): callback connect
+
+The user approved going back to a oneway connect with a callback, now that the client is small.
+This replaces the synchronous connect of §1; the result codes, the parcelable and the security
+model stay.
+
+- **Why.** The blocking `connect()` held one of Anytype's binder threads for up to 45 s
+  (`runBlocking` with a timeout) while an account started, and a per-uid map was needed so one app
+  could not pile up threads behind the controller mutex. The client in turn needed a `Mutex` plus
+  a lock, because it called the service off the main thread while the bind callbacks arrived on
+  it. With a callback, no binder thread waits, and the client can live on the main thread alone,
+  with no locks.
+- **AIDL (VERSION 3).** `oneway void connect(IConnectCallback callback)`, where
+  `oneway interface IConnectCallback { void onResult(in ApiEndpoint endpoint); }`. `version()`
+  keeps its transaction code. No compatibility shim: no client of version 2 was released.
+- **Service.** Reads the calling uid on the binder thread and returns. A caller approved under no
+  account is answered `APPROVAL_REQUIRED` at once, as before. Every other connect runs in
+  `ApiBridge.backgroundScope`, and a second call from the same uid joins the connect in flight
+  (the existing map of `Deferred`, one completion handler per caller). The answer goes to
+  `onResult`; a `RemoteException` (the caller has gone) is swallowed. The server-side timeout,
+  `runBlocking` and `ApiBridge.connectTimeoutMs` are gone.
+- **Client.** The deadline moves to the client: 50 s (the old 45 s plus a margin), then
+  `Failed(INTERNAL)` as the old server timeout gave. All state is confined to the main thread
+  through a handler dispatcher on the main looper (not `Dispatchers.Main`, which an app's tests
+  may replace), so `connect()` and `close()` still work from any thread. Concurrent connects
+  share one binding; a lost binding fails every waiting answer at once. There is no separate
+  version check: no bridge with the blocking connect was released, and an incompatible bridge
+  would never answer, so it shows up as the timeout, whose message says so. `version()` stays
+  for a later protocol change.
+- **Size.** Trimmed to the old size on the service side (77 lines of code against 76); the
+  client is about 20 lines larger for the callback and the lost-binding handling, and has no
+  locks.

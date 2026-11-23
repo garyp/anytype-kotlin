@@ -5,11 +5,14 @@ import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import io.anytype.apibridge.IApiBridge
 import io.anytype.apibridge.ApiEndpoint
+import io.anytype.apibridge.IConnectCallback
+import android.os.DeadObjectException
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.After
 import org.junit.Before
@@ -98,24 +101,41 @@ class ApiBridgeServiceTest {
     /** What the system does for a new bind with [i] after an onUnbind that returned true. */
     private fun rebind(i: Intent = intent) = service.get().onRebind(i)
 
-    /** Calls connect from a background thread, as a remote binder thread would, as [uid]. */
-    private fun call(bridge: IApiBridge, uid: Int, timeoutMs: Long = 5_000): ApiEndpoint {
-        var result: ApiEndpoint? = null
+    /** Records the answers a caller receives. */
+    private class Answers : IConnectCallback.Stub() {
+        val received = LinkedBlockingQueue<ApiEndpoint>()
+        override fun onResult(endpoint: ApiEndpoint) {
+            received.add(endpoint)
+        }
+
+        fun await(timeoutMs: Long = 5_000): ApiEndpoint =
+            checkNotNull(received.poll(timeoutMs, TimeUnit.MILLISECONDS)) { "no answer within $timeoutMs ms" }
+    }
+
+    /**
+     * Sends connect as [uid], as a remote binder thread would, and checks that the binder call
+     * itself returns at once (oneway: no binder thread waits for the answer).
+     */
+    private fun send(bridge: IApiBridge, uid: Int, answers: IConnectCallback = Answers()): IConnectCallback {
         var error: Throwable? = null
         val t = Thread {
             try {
                 ShadowBinder.setCallingUid(uid)
-                result = bridge.connect()
+                bridge.connect(answers)
             } catch (e: Throwable) {
                 error = e
             }
         }
         t.start()
-        t.join(timeoutMs)
-        assertFalse(t.isAlive, "connect did not return within $timeoutMs ms")
+        t.join(1_000)
+        assertFalse(t.isAlive, "the binder call did not return at once")
         error?.let { throw it }
-        return checkNotNull(result)
+        return answers
     }
+
+    /** Sends connect as [uid] and waits for its answer. */
+    private fun call(bridge: IApiBridge, uid: Int, timeoutMs: Long = 5_000): ApiEndpoint =
+        (send(bridge, uid) as Answers).await(timeoutMs)
 
     private fun connect(bridge: IApiBridge, uid: Int): String {
         val e = call(bridge, uid)
@@ -227,23 +247,19 @@ class ApiBridgeServiceTest {
         approve(10_123)
         val b = bind()
         // An approved connect holds the controller mutex, blocked in the account start.
-        val holder = Thread {
-            ShadowBinder.setCallingUid(10_123)
-            b.connect()
-        }.apply { start() }
+        val holder = send(b, 10_123) as Answers
         try {
             assertTrue(inside.await(5, TimeUnit.SECONDS))
             assertEquals(IApiBridge.APPROVAL_REQUIRED, call(b, 10_555, timeoutMs = 1_000).code)
         } finally {
             release.countDown()
-            holder.join(5_000)
         }
+        assertEquals(IApiBridge.OK, holder.await().code)
     }
 
     @Test
-    fun hungConnectReturnsInternalWithinTheTimeout() {
+    fun slowConnectHoldsNoBinderThreadAndAnswersWhenReady() {
         val release = CountDownLatch(1)
-        ApiBridge.connectTimeoutMs = 200
         ApiBridge.install(gateway, object : AccountLauncher {
             override fun runningAccount() = AccountRef("A", "Alice")
             override suspend fun ensureStarted(): AccountRef {
@@ -253,11 +269,50 @@ class ApiBridgeServiceTest {
             override fun generation() = 1L
         }, FakeSpaces())
         approve(10_123)
+        // send() asserts that the binder call returns while the account start still blocks.
+        val answers = send(bind(), 10_123) as Answers
         try {
-            assertEquals(IApiBridge.INTERNAL, call(bind(), 10_123, timeoutMs = 2_000).code)
+            Thread.sleep(200)
+            assertTrue(answers.received.isEmpty(), "answered before the connect finished")
         } finally {
             release.countDown()
         }
+        assertEquals("key1", answers.await().apiKey)
+    }
+
+    @Test
+    fun callerGoneBeforeTheAnswerIsIgnored() {
+        install()
+        approve(10_123)
+        val b = bind()
+        val calls = AtomicInteger()
+        val gone = object : IConnectCallback.Stub() {
+            override fun onResult(endpoint: ApiEndpoint) {
+                calls.incrementAndGet()
+                throw DeadObjectException()
+            }
+        }
+        // Neither the fast path nor the background answer lets the exception escape.
+        send(b, 10_999, gone)
+        send(b, 10_123, gone)
+        waitUntil { calls.get() == 2 && ApiBridge.inFlightConnects.isEmpty() }
+        assertTrue(connect(b, 10_123).startsWith("ready "))
+    }
+
+    @Test
+    fun cancelledConnectAnswersInternal() {
+        ApiBridge.install(gateway, object : AccountLauncher {
+            override fun runningAccount() = AccountRef("A", "Alice")
+            override suspend fun ensureStarted(): AccountRef = awaitCancellation()
+            override fun generation() = 1L
+        }, FakeSpaces())
+        approve(10_123)
+        val answers = send(bind(), 10_123) as Answers
+        waitUntil { ApiBridge.inFlightConnects.isNotEmpty() }
+        // What resetting the background scope does to a connect in flight.
+        ApiBridge.inFlightConnects.values.single().cancel()
+        assertEquals(IApiBridge.INTERNAL, answers.await().code)
+        waitUntil { ApiBridge.inFlightConnects.isEmpty() }
     }
 
     @Test
@@ -275,23 +330,20 @@ class ApiBridgeServiceTest {
         }, FakeSpaces())
         approve(10_123)
         val b = bind()
-        val results = ConcurrentLinkedQueue<ApiEndpoint>()
-        val threads = List(5) {
-            Thread {
-                ShadowBinder.setCallingUid(10_123)
-                results.add(b.connect())
-            }.apply { start() }
-        }
-        try {
+        val callers = List(5) { send(b, 10_123) as Answers }
+        val results = try {
             waitUntil { starts.get() >= 1 }
             Thread.sleep(200)
+            assertEquals(1, ApiBridge.inFlightConnects.size)
+            release.countDown()
+            callers.map { it.await() }
         } finally {
             release.countDown()
-            threads.forEach { it.join(5_000) }
         }
         assertEquals(1, starts.get(), "concurrent calls from one uid ran more than one connect")
         assertEquals(5, results.size)
         assertTrue(results.all { it.code == IApiBridge.OK && it.apiKey == "key1" })
+        waitUntil { ApiBridge.inFlightConnects.isEmpty() }
         // Once it has finished, a later call runs a connect of its own.
         assertEquals(IApiBridge.OK, call(b, 10_123).code)
         assertEquals(2, starts.get())

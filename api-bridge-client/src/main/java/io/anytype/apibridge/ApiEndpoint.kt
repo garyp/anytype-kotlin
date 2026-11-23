@@ -4,8 +4,8 @@ import android.os.Parcel
 import android.os.Parcelable
 
 /**
- * Reply of [IApiBridge.connect]. [code] is [IApiBridge.OK], with [baseUrl] and [apiKey] set,
- * or one of the error codes on [IApiBridge].
+ * Answer of [IApiBridge.connect], delivered to [IConnectCallback.onResult]. [code] is
+ * [IApiBridge.OK], with [baseUrl] and [apiKey] set, or one of the error codes on [IApiBridge].
  */
 class ApiEndpoint(
     val code: Int,

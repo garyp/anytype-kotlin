@@ -15,6 +15,7 @@ import android.os.Parcel
 import androidx.test.core.app.ApplicationProvider
 import io.anytype.apibridge.ApiEndpoint
 import io.anytype.apibridge.IApiBridge
+import io.anytype.apibridge.IConnectCallback
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -84,10 +85,19 @@ class AnytypeBridgeTest {
     }
     private val pkg = AnytypeBridge.DEFAULT_PACKAGE
 
-    /** Registers a fake bridge service whose connect() runs [block]: return or throw. */
-    private fun install(block: () -> ApiEndpoint?) {
+    /**
+     * Registers a fake bridge service whose connect() runs [block] and answers with its result
+     * on the calling thread, or throws what [block] throws.
+     */
+    private fun install(block: () -> ApiEndpoint?) = installRaw { cb -> cb.onResult(block()) }
+
+    /**
+     * Registers a fake bridge service that hands each connect's callback to [onConnect], which
+     * may answer it later, from any thread, or never.
+     */
+    private fun installRaw(onConnect: (IConnectCallback) -> Unit) {
         val stub = object : IApiBridge.Stub() {
-            override fun connect(): ApiEndpoint? = block()
+            override fun connect(callback: IConnectCallback) = onConnect(callback)
             override fun version(): Int = IApiBridge.VERSION
         }
         val intent = Intent(AnytypeBridge.BIND_ACTION).setPackage(pkg)
@@ -136,13 +146,140 @@ class AnytypeBridgeTest {
     }
 
     @Test
-    fun nullReplyMeansAnIncompatibleBridge() {
-        // What an Anytype with another IApiBridge (e.g. too old) answers: no reply parcel.
+    fun nullAnswerIsMalformed() {
         install { null }
         val bridge = AnytypeBridge(ctx)
         val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper { bridge.connect() } }
         assertEquals(IApiBridge.INTERNAL, e.code)
-        assertTrue(e.message!!.endsWith(": no reply: Anytype bridge too old or incompatible"))
+        assertTrue(e.message!!.endsWith(": malformed reply"))
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun noAnswerWithinTheTimeoutFailsWithInternalAndKeepsTheBinding() {
+        var calls = 0
+        installRaw { cb -> if (++calls > 1) cb.onResult(endpoint()) }
+        val bridge = AnytypeBridge(ctx)
+        bridge.replyTimeoutMs = 200
+        // The timeout runs on the main looper's clock, which Robolectric advances only on request.
+        val tick = { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(50)) }
+        val e = assertThrows(BridgeException.Failed::class.java) { connectWithLooper(tick) { bridge.connect() } }
+        assertEquals(IApiBridge.INTERNAL, e.code)
+        assertTrue(e.message!!, e.message!!.contains("no reply within"))
+        // The service may still be busy: the binding stays, and the next call asks again.
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
+        assertEquals(1, ctx.bindCount)
+        bridge.close()
+    }
+
+    @Test
+    fun defaultTimeoutIsTheOldServiceBudgetPlusAMargin() {
+        assertEquals(50_000L, AnytypeBridge.REPLY_TIMEOUT_MS)
+        assertEquals(AnytypeBridge.REPLY_TIMEOUT_MS, AnytypeBridge(ctx).replyTimeoutMs)
+    }
+
+    @Test(timeout = 30_000)
+    fun concurrentConnectsShareOneBinding() {
+        val callbacks = mutableListOf<IConnectCallback>()
+        installRaw { callbacks.add(it) }
+        val bridge = AnytypeBridge(ctx)
+        val scope = CoroutineScope(Dispatchers.Default)
+        val results = List(3) { scope.async { bridge.connect() } }
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (callbacks.size < 3) {
+            shadowOf(Looper.getMainLooper()).idle()
+            check(System.nanoTime() < deadline) { "connects did not reach the service" }
+            Thread.sleep(5)
+        }
+        assertEquals(1, ctx.bindCount)
+        // The answers arrive on a binder thread of this process, not on main.
+        Thread { callbacks.forEach { it.onResult(endpoint()) } }.apply { start() }.join()
+        while (!results.all { it.isCompleted }) {
+            shadowOf(Looper.getMainLooper()).idle()
+            check(System.nanoTime() < deadline) { "connects did not complete" }
+            Thread.sleep(5)
+        }
+        runBlocking { results.forEach { assertEquals(Endpoint("http://127.0.0.1:1", "k"), it.await()) } }
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun cancelledConnectLeavesTheBindingUsable() {
+        val callbacks = mutableListOf<IConnectCallback>()
+        installRaw { callbacks.add(it) }
+        val bridge = AnytypeBridge(ctx)
+        val waiting = CoroutineScope(Dispatchers.Default).async { bridge.connect() }
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (callbacks.isEmpty()) {
+            shadowOf(Looper.getMainLooper()).idle()
+            check(System.nanoTime() < deadline) { "connect did not reach the service" }
+            Thread.sleep(5)
+        }
+        runBlocking { waiting.cancel() }
+        while (!waiting.isCompleted) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(5)
+        }
+        assertTrue(waiting.isCancelled)
+        // A late answer for the cancelled call is ignored.
+        callbacks.single().onResult(endpoint())
+        val next = CoroutineScope(Dispatchers.Default).async { bridge.connect() }
+        while (!next.isCompleted) {
+            shadowOf(Looper.getMainLooper()).idle()
+            callbacks.drop(1).forEach { it.onResult(endpoint()) }
+            check(System.nanoTime() < deadline) { "connect did not complete" }
+            Thread.sleep(5)
+        }
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), runBlocking { next.await() })
+        assertEquals(1, ctx.bindCount)
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun serviceDisconnectedWhileWaitingForTheAnswerFailsAndRebinds() {
+        var answer = false
+        var reached = false
+        installRaw { cb -> if (answer) cb.onResult(endpoint()) else reached = true }
+        val bridge = AnytypeBridge(ctx)
+        val e = assertThrows(BridgeException.Failed::class.java) {
+            var fired = false
+            connectWithLooper(onTick = {
+                // Once the connect waits for its answer, the service process dies.
+                if (reached && !fired) {
+                    fired = true
+                    ctx.lastConnection!!.onServiceDisconnected(ComponentName(pkg, "$pkg.BridgeService"))
+                }
+            }) { bridge.connect() }
+        }
+        assertEquals(IApiBridge.INTERNAL, e.code)
+        assertTrue(e.message!!.endsWith(": bridge disconnected"))
+        answer = true
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
+        assertEquals(2, ctx.bindCount)
+        bridge.close()
+    }
+
+    @Test
+    fun secondAnswerIsIgnored() {
+        installRaw { cb ->
+            cb.onResult(endpoint())
+            cb.onResult(error(IApiBridge.API_FAILED))
+        }
+        val bridge = AnytypeBridge(ctx)
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
+        bridge.close()
+    }
+
+    @Test(timeout = 30_000)
+    fun closeFromAnotherThreadRunsOnMainBeforeTheNextConnect() {
+        install { endpoint() }
+        val bridge = AnytypeBridge(ctx)
+        connectWithLooper { bridge.connect() }
+        assertEquals(1, ctx.bindCount)
+        // Queued on main, ahead of the connect that follows it.
+        Thread { bridge.close() }.apply { start() }.join()
+        assertEquals(Endpoint("http://127.0.0.1:1", "k"), connectWithLooper { bridge.connect() })
+        assertEquals(2, ctx.bindCount)
         bridge.close()
     }
 
@@ -183,15 +320,17 @@ class AnytypeBridgeTest {
     }
 
     @Test(timeout = 30_000)
-    fun connectDoesBinderCallOffMainThread() {
-        var offMain = false
-        install {
-            offMain = Looper.myLooper() != Looper.getMainLooper()
-            endpoint()
+    fun connectFromMainNeverBlocksIt() {
+        var connectOnMain = false
+        installRaw { cb ->
+            // The oneway connect never blocks, so it goes out from main; the answer comes back
+            // on another thread.
+            connectOnMain = Looper.myLooper() == Looper.getMainLooper()
+            Thread { cb.onResult(endpoint()) }.start()
         }
         val bridge = AnytypeBridge(ctx)
         // Start connect() on the main thread itself (the test thread is the main looper's
-        // thread), idling the looper until it completes: the binder call must still leave it.
+        // thread), idling the looper until it completes.
         val handler = Handler(Looper.getMainLooper())
         val main = Executor { handler.post(it) }.asCoroutineDispatcher()
         val result = CoroutineScope(main).async { bridge.connect() }
@@ -202,7 +341,7 @@ class AnytypeBridgeTest {
             Thread.sleep(5)
         }
         assertEquals(Endpoint("http://127.0.0.1:1", "k"), runBlocking { result.await() })
-        assertTrue(offMain)
+        assertTrue(connectOnMain)
         bridge.close()
     }
 

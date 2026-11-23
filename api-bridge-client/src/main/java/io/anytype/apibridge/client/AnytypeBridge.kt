@@ -9,7 +9,9 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.RemoteException
 import androidx.annotation.RequiresApi
 import androidx.annotation.VisibleForTesting
@@ -17,12 +19,13 @@ import androidx.core.app.ActivityOptionsCompat
 import androidx.core.content.ContextCompat
 import io.anytype.apibridge.ApiEndpoint
 import io.anytype.apibridge.IApiBridge
+import io.anytype.apibridge.IConnectCallback
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** The local API endpoint. [toString] leaves [apiKey] out, so logging an endpoint leaks no key. */
 data class Endpoint(val baseUrl: String, val apiKey: String) {
@@ -44,8 +47,12 @@ internal fun interface SigningCheck {
  * [connect] throws [BridgeException.Untrusted], and nothing reaches the impostor. The check
  * needs API 28+; below that a pinned bridge never binds.
  *
- * An instance has a single owner and is not thread-safe beyond [connect], which a mutex
- * serializes.
+ * Threading: [connect] and [close] may be called from any thread. All state lives on the main
+ * thread, where the bind callbacks arrive too, so the class needs no lock: [connect] switches to
+ * the main thread for every state access (at once when already there), and [close] runs there.
+ * Concurrent [connect] calls share one binding. [IApiBridge.connect] is oneway and never blocks;
+ * the answer arrives through a callback within [REPLY_TIMEOUT_MS], or [connect] gives up. An
+ * Anytype whose bridge speaks an incompatible protocol shows up as that timeout.
  */
 class AnytypeBridge(
     context: Context,
@@ -55,15 +62,25 @@ class AnytypeBridge(
 
     private val context: Context = context.applicationContext ?: context
     private val expectedCert: ByteArray? = expectedCertSha256?.let(::parseSha256)
-    private val mutex = Mutex()
-    private val lock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
-    // The current binding; a callback from an older one is ignored. Guarded by lock.
+    private val main = mainHandler.asCoroutineDispatcher().immediate
+
+    /** How long [connect] waits for the answer of the service; see [REPLY_TIMEOUT_MS]. */
+    @VisibleForTesting
+    internal var replyTimeoutMs: Long = REPLY_TIMEOUT_MS
+
+    // The current binding; a callback from an older one is ignored. Main thread only.
     private var connection: Conn? = null
 
-    /** A binding to the service; [service] completes on onServiceConnected or fails. */
+    /**
+     * A binding to the service. [service] completes on onServiceConnected or fails; [lost]
+     * completes when the binding is released, which fails every answer still awaited on it.
+     * Main thread only, like every callback of the connection.
+     */
     private inner class Conn : ServiceConnection {
         val service = CompletableDeferred<IApiBridge>()
+        val lost = Job()
 
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val bridge = IApiBridge.Stub.asInterface(binder)
@@ -89,31 +106,63 @@ class AnytypeBridge(
      * Binds to the bridge service if needed, then asks it for the endpoint; the binding is kept.
      * Throws [BridgeException].
      *
-     * Cancelling the coroutine cannot interrupt a binder call already in progress: the call ends
-     * when the service answers. The service bounds that wait (about 45 seconds), then answers
-     * [IApiBridge.INTERNAL].
+     * Waits at most [REPLY_TIMEOUT_MS] (50 s) for the answer, then throws
+     * [BridgeException.Failed] with [IApiBridge.INTERNAL]; the connect goes on inside Anytype,
+     * and a later call can pick up its result. Cancelling the coroutine stops the wait at once
+     * and keeps the binding; [close] drops it.
      */
-    suspend fun connect(): Endpoint = mutex.withLock {
-        val conn = synchronized(lock) { connection } ?: bind()
-        val bridge = try {
-            conn.service.await()
-        } catch (e: Throwable) {
-            release(conn, null)
-            throw e
+    suspend fun connect(): Endpoint = withContext(main) {
+        val conn = connection ?: bind()
+        // Fails only once release() has run, which already dropped the binding.
+        val bridge = conn.service.await()
+        toEndpoint(requestEndpoint(conn, bridge))
+    }
+
+    /** Sends the oneway connect and waits for its callback, for at most [replyTimeoutMs]. */
+    private suspend fun requestEndpoint(conn: Conn, bridge: IApiBridge): ApiEndpoint {
+        val reply = CompletableDeferred<ApiEndpoint>()
+        // The service process died or the binding was closed: no answer will come.
+        val onLost = conn.lost.invokeOnCompletion {
+            reply.completeExceptionally(BridgeException.Failed(IApiBridge.INTERNAL, "bridge disconnected"))
         }
-        val reply: ApiEndpoint? = try {
-            withContext(Dispatchers.IO) { bridge.connect() }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: RemoteException) {
-            release(conn, null)
-            throw BridgeException.Failed(IApiBridge.INTERNAL, "bridge disconnected")
-        } catch (e: RuntimeException) {
-            // Any other failure of the call (e.g. a bad parcel): drop the binding, rebind next time.
-            release(conn, null)
-            throw BridgeException.Failed(IApiBridge.INTERNAL, "bridge call failed: ${e.javaClass.simpleName}")
+        try {
+            binderCall(conn) { bridge.connect(ReplyCallback(reply)) }
+            return withTimeoutOrNull(replyTimeoutMs) { reply.await() }
+                ?: throw BridgeException.Failed(
+                    IApiBridge.INTERNAL,
+                    "no reply within ${replyTimeoutMs / 1000} s: Anytype busy, or its bridge too old or incompatible"
+                )
+        } finally {
+            onLost.dispose()
         }
-        toEndpoint(reply)
+    }
+
+    /**
+     * Completes [reply] with the first answer. Called on a binder thread of this process;
+     * [CompletableDeferred] ignores a second answer, and the waiting coroutine resumes on main.
+     */
+    private class ReplyCallback(private val reply: CompletableDeferred<ApiEndpoint>) : IConnectCallback.Stub() {
+        override fun onResult(endpoint: ApiEndpoint?) {
+            if (endpoint != null) {
+                reply.complete(endpoint)
+            } else {
+                reply.completeExceptionally(BridgeException.Failed(IApiBridge.INTERNAL, "malformed reply"))
+            }
+        }
+    }
+
+    /** Runs a binder call on [conn]; a dead or failing call drops the binding and fails. */
+    private inline fun <T> binderCall(conn: Conn, call: () -> T): T = try {
+        call()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: RemoteException) {
+        release(conn, null)
+        throw BridgeException.Failed(IApiBridge.INTERNAL, "bridge disconnected")
+    } catch (e: RuntimeException) {
+        // Any other failure of the call (e.g. a bad parcel): drop the binding, rebind next time.
+        release(conn, null)
+        throw BridgeException.Failed(IApiBridge.INTERNAL, "bridge call failed: ${e.javaClass.simpleName}")
     }
 
     private fun bind(): Conn {
@@ -123,7 +172,7 @@ class AnytypeBridge(
             throw BridgeException.Untrusted(targetPackage)
         }
         val conn = Conn()
-        synchronized(lock) { connection = conn }
+        connection = conn
         val ok = try {
             doBind(Intent(BIND_ACTION).setPackage(targetPackage), conn)
         } catch (e: Exception) {
@@ -146,31 +195,27 @@ class AnytypeBridge(
                 conn
             )
         } else {
+            // Without an executor, the callbacks arrive on the main thread too.
             context.bindService(intent, conn, BIND_AUTO_CREATE)
         }
 
     /**
-     * Unbinds [conn] if it is still the current binding, and fails a [connect] that waits for it
-     * with [error]. The next [connect] binds afresh.
+     * Unbinds [conn] if it is still the current binding, and fails every [connect] that waits on
+     * it: one that waits for the binding with [error], one that waits for an answer with
+     * "bridge disconnected". The next [connect] binds afresh. Main thread only.
      */
     private fun release(conn: Conn?, error: BridgeException?) {
-        if (conn == null) return
-        synchronized(lock) {
-            if (connection !== conn) return
-            connection = null
-        }
+        if (conn == null || connection !== conn) return
+        connection = null
         conn.service.completeExceptionally(error ?: BridgeException.NotInstalled(targetPackage))
+        conn.lost.complete()
         try {
             context.unbindService(conn)
         } catch (_: Exception) {
         }
     }
 
-    private fun toEndpoint(reply: ApiEndpoint?): Endpoint {
-        // A service with another IApiBridge (an Anytype too old for this client) sends no reply.
-        if (reply == null) {
-            throw BridgeException.Failed(IApiBridge.INTERNAL, "no reply: Anytype bridge too old or incompatible")
-        }
+    private fun toEndpoint(reply: ApiEndpoint): Endpoint {
         val code = reply.code
         if (code == IApiBridge.APPROVAL_REQUIRED) throw BridgeException.ApprovalRequired()
         if (code != IApiBridge.OK) throw BridgeException.Failed(code, messageFor(code))
@@ -191,10 +236,14 @@ class AnytypeBridge(
     }
 
     /**
-     * Unbinds from the service and fails a [connect] that waits for the binding. The next
-     * [connect] binds afresh.
+     * Unbinds from the service and fails every [connect] that waits on the binding. The next
+     * [connect] binds afresh. Runs at once on the main thread; from another thread it is queued
+     * there, ahead of any [connect] called after it.
      */
-    fun close() = release(synchronized(lock) { connection }, null)
+    fun close() {
+        if (Looper.myLooper() === Looper.getMainLooper()) release(connection, null)
+        else mainHandler.post { release(connection, null) }
+    }
 
     /** Intent to launch the approval screen of the Anytype app. */
     fun approvalIntent(): Intent = Intent(APPROVE_ACTION).setPackage(targetPackage)
@@ -221,6 +270,15 @@ class AnytypeBridge(
 
     companion object {
         const val DEFAULT_PACKAGE = "io.anytype.app"
+
+        /**
+         * How long [connect] waits for the answer of the service. The connect inside Anytype can
+         * start an account and heart's listener; the old blocking service gave up after 45 s,
+         * and this keeps that budget plus 5 s for the binder round trips and a busy main thread.
+         */
+        const val REPLY_TIMEOUT_MS = 50_000L
+
+        /** The first [IApiBridge.VERSION] whose connect answers through [IConnectCallback]. */
         const val BIND_ACTION = "io.anytype.apibridge.BIND"
         const val APPROVE_ACTION = "io.anytype.apibridge.APPROVE"
 

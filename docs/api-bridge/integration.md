@@ -68,34 +68,43 @@ installed under that name.
 ### What `connect()` does
 
 `connect()` is a suspend function. It binds to the Anytype bridge service if it is not bound yet
-(Anytype's process starts if needed) and keeps the binding. Then it makes one synchronous AIDL
-call, `IApiBridge.connect()`, on `Dispatchers.IO`. The service answers when the local API is
-ready, so the call can take a few seconds when Anytype has to start heart's listener. The result
-is an `Endpoint(baseUrl, apiKey)`: a loopback URL such as `http://127.0.0.1:<port>` and a bearer
-key for that app.
+(Anytype's process starts if needed) and keeps the binding. Then it sends the oneway call
+`IApiBridge.connect(callback)`, which returns at once, and suspends until the service answers
+through the callback. The service answers when the local API is ready, so this can take a few
+seconds when Anytype has to start the account or heart's listener. The result is an
+`Endpoint(baseUrl, apiKey)`: a loopback URL such as `http://127.0.0.1:<port>` and a bearer key
+for that app.
 
-The AIDL interface (version 2) is small, and an app that does not want the client library can
+The AIDL interface (version 3) is small, and an app that does not want the client library can
 use it directly:
 
 ```aidl
 interface IApiBridge {
-    const int VERSION = 2;
+    const int VERSION = 3;
     const int OK = 0;
     const int NOT_LOGGED_IN = 1;
     const int START_FAILED = 2;
     const int API_FAILED = 3;
     const int INTERNAL = 4;
     const int APPROVAL_REQUIRED = 5;
-    ApiEndpoint connect();   // blocks; ApiEndpoint { int code; String baseUrl; String apiKey }
-    int version();             // returns VERSION
+    oneway void connect(IConnectCallback callback);  // answers once, through the callback
+    int version();                                   // returns VERSION
+}
+
+oneway interface IConnectCallback {
+    void onResult(in ApiEndpoint endpoint);  // ApiEndpoint { int code; String baseUrl; String apiKey }
 }
 ```
 
-`connect()` waits at most about 45 seconds; past that the service answers `INTERNAL`, though the
-connect goes on inside Anytype and a later call can pick up its result. Cancelling the caller's
-coroutine cannot interrupt a binder call in progress, so this bound is the longest a call takes.
-Concurrent calls from one app share a single connect. New methods are only ever appended, after
-`version()`.
+The service answers each `connect` exactly once and sets no deadline of its own; a caller that
+has gone away by then is ignored. Concurrent calls from one app share a single connect inside
+Anytype, and each gets the same answer. New methods are only ever appended, after `version()`.
+
+**Timeout.** The client waits at most 50 seconds for the answer (`AnytypeBridge.REPLY_TIMEOUT_MS`:
+the 45 seconds the earlier blocking service allowed, plus a margin for the binder round trips and
+a busy main thread). Past that, `connect()` throws `BridgeException.Failed(INTERNAL, "no reply
+within 50 s")`; the connect goes on inside Anytype, and a later call can pick up its result.
+Cancelling the caller's coroutine stops the wait at once and keeps the binding.
 
 Errors travel in `ApiEndpoint.code`, never as exceptions over the binder. The client maps them:
 
@@ -105,18 +114,26 @@ Errors travel in `ApiEndpoint.code`, never as exceptions over the binder. The cl
 | `NOT_LOGGED_IN` (1) | no account is open in Anytype | `BridgeException.Failed(1, "not logged in")` |
 | `START_FAILED` (2) | heart's local API did not start | `BridgeException.Failed(2, ...)` |
 | `API_FAILED` (3) | a middleware request (for example minting the key) failed | `BridgeException.Failed(3, ...)` |
-| `INTERNAL` (4) | anything else; also a dead binder, a failed call or a malformed reply | `BridgeException.Failed(4, ...)` |
+| `INTERNAL` (4) | anything else; on the client side also no answer within the timeout, a dead binder, a failed call, a malformed answer (an incompatible bridge shows up as no answer) | `BridgeException.Failed(4, ...)` |
 | `APPROVAL_REQUIRED` (5) | the user has not approved this app (answered at once, before anything waits) | `BridgeException.ApprovalRequired` |
 
 Before the call, the client throws `BridgeException.NotInstalled` when it cannot bind (Anytype
-missing, or a build without the bridge) and `BridgeException.Untrusted` when the package is not signed with the pinned
-certificate. An Anytype whose bridge is too old or otherwise incompatible binds but sends no reply:
-that shows as `BridgeException.Failed(INTERNAL, "no reply: Anytype bridge too old or
-incompatible")`, not as `NotInstalled`. A `RemoteException` or binder death drops the binding, so the next `connect()` binds
-afresh.
+missing, or a build without the bridge) and `BridgeException.Untrusted` when the package is not
+signed with the pinned certificate. An Anytype whose bridge speaks an incompatible protocol takes
+the call but never answers it, so it shows up as the timeout:
+`Failed(INTERNAL, "no reply within 50 s: Anytype busy, or its bridge too old or incompatible")`.
+`version()` is there for a later protocol change to check against. A `RemoteException`, binder death or a lost binding while a call waits for its answer
+fails that call with `Failed(INTERNAL, "bridge disconnected")` and drops the binding, so the next
+`connect()` binds afresh.
 
-An `AnytypeBridge` instance has a single owner and is not thread-safe beyond `connect()`, which a
-mutex serializes.
+**Threading.** `connect()` and `close()` may be called from any thread. The client keeps all its
+state on the main thread, where the bind callbacks arrive too, so it needs no lock: `connect()`
+switches to the main thread for the state (at once when already there), and a `close()` from
+another thread is queued there, ahead of any `connect()` called after it. Concurrent `connect()`
+calls on one instance share one binding. Nothing in the client blocks the main thread: `connect`
+is oneway. The main thread must
+not be blocked while `connect()` waits (for example by `runBlocking` on it), or the answer cannot
+be delivered.
 
 ### The approval loop
 
@@ -140,8 +157,7 @@ Without it the consent screen refuses. The user sees your app name (the first li
 label, as the system shows labels) and signing certificate, picks
 all spaces or specific ones, and read-only or read-write. Other exceptions: `NotInstalled`
 (Anytype is missing or has no bridge), `Untrusted` (the package is not signed with the pinned
-certificate) and `Failed(code)`, whose `message` says what failed (including an
-Anytype bridge too old for this client: `INTERNAL`, "no reply: ...").
+certificate) and `Failed(code)`, whose `message` says what failed (including no answer in time, `INTERNAL`).
 
 Approvals are per Anytype account and pinned to your package name and signing certificate. The user
 can list and revoke connected apps on Anytype's "Connected apps" screen (also reachable from the

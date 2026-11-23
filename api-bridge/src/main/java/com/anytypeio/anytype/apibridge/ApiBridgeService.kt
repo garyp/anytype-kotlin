@@ -8,78 +8,88 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import io.anytype.apibridge.ApiEndpoint
 import io.anytype.apibridge.IApiBridge
+import io.anytype.apibridge.IConnectCallback
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The exported service connected apps bind with [ApiBridge.ACTION_BIND]. The manifest enables it
  * only on API 35+ (`@bool/api_bridge_enabled`).
  *
- * [IApiBridge.connect] blocks the binder thread until the endpoint is ready, but for at most
- * [ApiBridge.connectTimeoutMs] (45 s): the connect runs in [ApiBridge.backgroundScope], and a
- * caller still waiting at the deadline gets INTERNAL while the connect finishes under the
- * controller mutex. Calls from one uid share the connect in flight, so a caller cannot pile up
- * binder threads behind the mutex. Errors travel in [ApiEndpoint.code] only; details stay in
- * the log.
+ * [IApiBridge.connect] is a oneway call: it reads the calling uid on the binder thread and
+ * returns at once, and the answer goes to the caller's [IConnectCallback] when it is ready. No
+ * binder thread waits for an account start or the controller mutex. A caller approved under no
+ * account is answered APPROVAL_REQUIRED on the binder thread, before anything waits; every other
+ * connect runs in [ApiBridge.backgroundScope]. Calls from one uid share the connect in flight
+ * ([ApiBridge.inFlightConnects]): a second call while one runs gets the same result, so one uid
+ * holds at most one connect, and each extra call costs only a completion handler.
+ *
+ * The service sets no deadline; the client bounds its own wait. A caller that has gone away is
+ * ignored when its answer is ready. Errors travel in [ApiEndpoint.code] only; details stay in the
+ * log, and no exception ever crosses the binder.
  */
 @RequiresApi(35)
 class ApiBridgeService : Service() {
 
     private val binder = object : IApiBridge.Stub() {
-        override fun connect(): ApiEndpoint {
+        override fun connect(callback: IConnectCallback?) {
             // Only valid on the binder thread, before any switch.
             val uid = Binder.getCallingUid()
-            return try {
-                answer(uid)
-            } catch (e: Throwable) {
+            callback ?: return
+            try {
+                val controller = ApiBridge.controller(this@ApiBridgeService)
+                when {
+                    controller == null -> reply(uid, callback, failure(IApiBridge.INTERNAL, NOT_INSTALLED))
+                    // Fast path: a caller approved under no account never reaches the mutex.
+                    !controller.isApprovedAnywhere(uid) -> reply(uid, callback, failure(IApiBridge.APPROVAL_REQUIRED))
+                    else -> ApiBridge.backgroundScope.launch {
+                        val endpoint = try {
+                            endpoint(sharedConnect(controller, uid).await())
+                        } catch (e: Throwable) {
+                            // Cancelled with the scope, or a failure the controller let through.
+                            failure(IApiBridge.INTERNAL, e.toString())
+                        }
+                        reply(uid, callback, endpoint)
+                    }
+                }
+            } catch (e: Exception) {
                 // Never let an exception cross the binder: the caller gets a code, nothing more.
-                Log.w(TAG, "connect from uid $uid failed", e)
-                failure(IApiBridge.INTERNAL)
+                reply(uid, callback, failure(IApiBridge.INTERNAL, e.toString()))
             }
         }
 
         override fun version(): Int = IApiBridge.VERSION
     }
 
-    private fun answer(uid: Int): ApiEndpoint {
-        val controller = ApiBridge.controller(this)
-        if (controller == null) {
-            Log.w(TAG, "connect from uid $uid: $NOT_INSTALLED")
-            return failure(IApiBridge.INTERNAL)
-        }
-        // Fast path, before anything that waits: a caller approved under no account must not
-        // tie up a binder thread behind the mutex or an account start.
-        if (!controller.isApprovedAnywhere(uid)) return failure(IApiBridge.APPROVAL_REQUIRED)
-        val r = awaitConnect(controller, uid) ?: run {
-            Log.w(TAG, "connect from uid $uid timed out after ${ApiBridge.connectTimeoutMs} ms")
-            return failure(IApiBridge.INTERNAL)
-        }
-        return when (r) {
-            is BridgeController.ConnectResult.Ready -> ApiEndpoint(IApiBridge.OK, r.baseUrl, r.apiKey)
-            BridgeController.ConnectResult.ApprovalRequired -> failure(IApiBridge.APPROVAL_REQUIRED)
-            is BridgeController.ConnectResult.Error -> {
-                // Details stay in the log; the third-party caller gets the code alone.
-                Log.w(TAG, "connect from uid $uid failed: ${r.code} ${genericMessage(r.code)}: ${r.message}")
-                failure(r.code)
-            }
-        }
-    }
-
     /**
-     * Joins the connect in flight for [uid], or starts one, and waits for it on this binder thread
-     * for at most [ApiBridge.connectTimeoutMs]. Null on timeout.
+     * The connect in flight for [uid], or a new one. Lazy, so that the removal on completion is
+     * registered before it can finish and leave a finished connect in the map.
      */
-    private fun awaitConnect(controller: BridgeController, uid: Int): BridgeController.ConnectResult? {
+    private fun sharedConnect(controller: BridgeController, uid: Int): Deferred<BridgeController.ConnectResult> {
         val inFlight = ApiBridge.inFlightConnects
         val deferred = inFlight.computeIfAbsent(uid) {
             ApiBridge.backgroundScope.async(start = CoroutineStart.LAZY) { controller.connect(uid) }
         }
         deferred.invokeOnCompletion { inFlight.remove(uid, deferred) }
         deferred.start()
-        return runBlocking { withTimeoutOrNull(ApiBridge.connectTimeoutMs) { deferred.await() } }
+        return deferred
+    }
+
+    private fun endpoint(r: BridgeController.ConnectResult): ApiEndpoint = when (r) {
+        is BridgeController.ConnectResult.Ready -> ApiEndpoint(IApiBridge.OK, r.baseUrl, r.apiKey)
+        BridgeController.ConnectResult.ApprovalRequired -> failure(IApiBridge.APPROVAL_REQUIRED)
+        is BridgeController.ConnectResult.Error -> failure(r.code, r.message)
+    }
+
+    /** Sends the answer; a caller that has gone away is only logged. */
+    private fun reply(uid: Int, callback: IConnectCallback, endpoint: ApiEndpoint) {
+        try {
+            callback.onResult(endpoint)
+        } catch (e: Exception) {
+            Log.i(TAG, "connect from uid $uid: caller gone before the answer")
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -120,13 +130,10 @@ class ApiBridgeService : Service() {
         ApiBridge.backgroundScope.launch(ApiBridge.unbindDispatcher) { controller.onAllUnbound() }
     }
 
-    private fun failure(code: Int) = ApiEndpoint(code, null, null)
-
-    private fun genericMessage(code: Int) = when (code) {
-        IApiBridge.NOT_LOGGED_IN -> "not logged in"
-        IApiBridge.START_FAILED -> "account start failed"
-        IApiBridge.API_FAILED -> "local API call failed"
-        else -> "internal error"
+    /** Details ([why]) stay in the log; the third-party caller gets the code alone. */
+    private fun failure(code: Int, why: String? = null): ApiEndpoint {
+        if (why != null) Log.w(TAG, "connect failed with code $code: $why")
+        return ApiEndpoint(code, null, null)
     }
 
     private companion object {
