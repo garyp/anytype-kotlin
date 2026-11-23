@@ -9,8 +9,30 @@ in the same user profile.
 
 ## 1. Add the client library
 
-Depend on `:api-bridge-client` (or copy its sources and AIDL files). It declares `INTERNET` and the
-`<queries>` entry for the bridge.
+The client library is published to GitHub Packages. GitHub's Maven registry needs a token with
+`read:packages` even for public packages:
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        maven("https://maven.pkg.github.com/garyp/anytype-kotlin") {
+            credentials {
+                username = providers.gradleProperty("gpr.user").get()
+                password = providers.gradleProperty("gpr.key").get()   // token with read:packages
+            }
+            content { includeGroup("io.anytype.apibridge") }
+        }
+    }
+}
+
+// build.gradle.kts
+dependencies {
+    implementation("io.anytype.apibridge:api-bridge-client:0.1.0")
+}
+```
+
+It declares `INTERNET` and the `<queries>` entry for the bridge.
 
 The API is plain HTTP on `127.0.0.1`, so allow cleartext to loopback only:
 
