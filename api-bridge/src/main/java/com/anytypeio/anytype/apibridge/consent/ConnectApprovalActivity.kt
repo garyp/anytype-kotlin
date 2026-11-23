@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -112,6 +113,9 @@ class ConnectApprovalActivity : ComponentActivity() {
     private var account: AccountRef? = null
     private var decided = false
 
+    /** The choices from before a recreation (a rotation, say), applied once the spaces load. */
+    private var restored: Bundle? = null
+
     private var icon by mutableStateOf<ImageBitmap?>(null)
 
     /**
@@ -145,6 +149,7 @@ class ConnectApprovalActivity : ComponentActivity() {
             return
         }
         caller = c
+        restored = savedInstanceState?.getBundle(KEY_CHOICES)
 
         setContentView(ComposeView(this).apply {
             protect()
@@ -209,7 +214,30 @@ class ConnectApprovalActivity : ComponentActivity() {
             packageName = pkg,
             certShort = ConsentState.shortCert(certSha),
             spaces = spaces
-        )
+        ).withChoices(restored)
+        restored = null
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // Before the spaces load, the choices are still the ones from before the last recreation.
+        val choices = restored ?: state.takeUnless { it.loading }?.let { s ->
+            Bundle().apply {
+                putBoolean(KEY_ALL_SPACES, s.allSpaces)
+                putStringArrayList(KEY_SELECTED, ArrayList(s.selected))
+                putString(KEY_ACCESS, s.access.name)
+            }
+        }
+        choices?.let { outState.putBundle(KEY_CHOICES, it) }
+    }
+
+    /** Applies saved choices; toggleSpace drops spaces that are no longer listed. */
+    private fun ConsentState.withChoices(b: Bundle?): ConsentState {
+        if (b == null) return this
+        val access = b.getString(KEY_ACCESS)?.let { name -> Access.entries.find { it.name == name } }
+        return b.getStringArrayList(KEY_SELECTED).orEmpty()
+            .fold(setAllSpaces(b.getBoolean(KEY_ALL_SPACES, true))) { s, id -> s.toggleSpace(id) }
+            .let { if (access != null) it.setAccess(access) else it }
     }
 
     @VisibleForTesting
@@ -299,6 +327,10 @@ class ConnectApprovalActivity : ComponentActivity() {
         internal const val ICON_TAG = "connected_app_icon"
         private const val ICON_DP = 56
         private const val ARM_DELAY_MS = 750L
+        private const val KEY_CHOICES = "consent_choices"
+        private const val KEY_ALL_SPACES = "all_spaces"
+        private const val KEY_SELECTED = "selected"
+        private const val KEY_ACCESS = "access"
 
         private val defaultCertLookup = CertLookup { context, pkg ->
             CallerVerifier(context.packageManager, AppApprovals(context)).currentCertSha256(pkg)
@@ -360,6 +392,8 @@ private class ConsentUi(
 private fun ConsentSheet(state: ConsentState, ui: ConsentUi) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
+        // A tall sheet (a phone in landscape, many spaces) stops below the status bar.
+        modifier = Modifier.statusBarsPadding(),
         onDismissRequest = ui.onDeny,
         sheetState = sheetState,
         sheetMaxWidth = contentWidthDp(),
@@ -487,9 +521,9 @@ private fun ConsentContent(state: ConsentState, ui: ConsentUi) {
             }
         }
         Divider()
-        if (!state.allSpaces) {
+        state.limitNote()?.let { note ->
             Text(
-                ConsentState.NARROWED_NOTE,
+                note,
                 Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
                 style = Caption1Regular,
                 color = colorResource(R.color.text_secondary)

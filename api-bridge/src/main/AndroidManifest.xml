@@ -17,13 +17,14 @@
             </intent-filter>
         </service>
 
-        <!-- Connected apps start this for result, with setShareIdentityEnabled(true), to ask for access. -->
+        <!-- Connected apps start this for result, with setShareIdentityEnabled(true), to ask for access.
+             Not noHistory: the sheet stays open until the user answers, also while they look at
+             Connected apps from its link. -->
         <activity
             android:name="com.anytypeio.anytype.apibridge.consent.ConnectApprovalActivity"
             android:enabled="@bool/api_bridge_enabled"
             android:excludeFromRecents="true"
             android:exported="true"
-            android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             tools:targetApi="35">
             <intent-filter>

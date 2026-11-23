@@ -6,6 +6,7 @@ import com.anytypeio.anytype.apibridge.SpaceRef
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ConsentStateTest {
@@ -98,9 +99,19 @@ class ConsentStateTest {
             "Choose the spaces that Client can access.",
             narrow.copy(accountName = "").toggleSpace("s1").toggleSpace("s2").body()
         )
+        // Any limited approval loses /v1; only full access (all spaces, read and change) keeps it.
+        assertNull(loaded.limitNote())
         assertEquals(
             "With specific spaces, the app can use the v2 API and MCP only, and cannot create spaces.",
-            ConsentState.NARROWED_NOTE
+            loaded.setAllSpaces(false).limitNote()
+        )
+        assertEquals(
+            "With read-only access, the app can use the v2 API and MCP only.",
+            loaded.setAccess(Access.READ_ONLY).limitNote()
+        )
+        assertEquals(
+            "With specific spaces, the app can use the v2 API and MCP only, and cannot create spaces.",
+            loaded.setAllSpaces(false).setAccess(Access.READ_ONLY).limitNote()
         )
     }
 

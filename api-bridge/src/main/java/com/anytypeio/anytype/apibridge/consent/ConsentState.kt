@@ -51,9 +51,20 @@ data class ConsentState(
         return "$appLabel will be able to $verbs all objects in $where$of while it is connected."
     }
 
+    /**
+     * What a limited approval rules out, or null for full access. Heart serves `/v1` only to a key
+     * with access to all spaces and read and change; any narrower key is `/v2` and MCP only.
+     */
+    fun limitNote(): String? = when {
+        !allSpaces -> SPACES_NOTE
+        access == Access.READ_ONLY -> READ_ONLY_NOTE
+        else -> null
+    }
+
     companion object {
-        const val NARROWED_NOTE =
+        private const val SPACES_NOTE =
             "With specific spaces, the app can use the v2 API and MCP only, and cannot create spaces."
+        private const val READ_ONLY_NOTE = "With read-only access, the app can use the v2 API and MCP only."
 
         /** First 16 hex chars, in groups of 4 separated by spaces. */
         fun shortCert(hex: String): String = hex.take(16).chunked(4).joinToString(" ")

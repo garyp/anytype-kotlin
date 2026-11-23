@@ -145,6 +145,9 @@ v0.51.6 with the fix, and is not rechecked:
   (`has_not_granted_spaces: true`).
 - Read-only key: MCP `create` returns HTTP 200 with `result.isError=true` and text
   "the HTTP API is a write and the key's grant is read-only..."; REST write is 403 `write_not_granted`.
+  `/v1/*` is 403 as well, even with all spaces: heart serves `/v1` only to a full-access key
+  (all spaces, read and change). Confirmed on the emulator with the test app's Probe button
+  (2026-11-22): read-only all spaces → `/v1/spaces` 403; full access → 200.
 - MCP tool results carry `structuredContent` (`create` -> `{id,type,etag}`, `find` -> `{handles:[{n,id,name,type}]}`);
   `find` handle numbers are per MCP session, so `read` must use the same MCP session. `find` is
   eventually consistent (full-text index), so the test polls.

@@ -106,8 +106,9 @@ class ConnectApprovalActivityTest {
      * Launches and waits for the sheet. Robolectric never gives the sheet window focus, so the
      * test does what the system does when the sheet comes to the front.
      */
-    private fun launchShown(): ActivityScenario<ConnectApprovalActivity> {
-        val scenario = launch()
+    private fun launchShown(): ActivityScenario<ConnectApprovalActivity> = launch().also(::awaitSheet)
+
+    private fun awaitSheet(scenario: ActivityScenario<ConnectApprovalActivity>) {
         val deadline = System.currentTimeMillis() + 5_000
         var root: android.view.View? = null
         while (root == null) {
@@ -117,7 +118,6 @@ class ConnectApprovalActivityTest {
             if (root == null) Thread.sleep(10)
         }
         root!!.rootView.dispatchWindowFocusChanged(true)
-        return scenario
     }
 
     /**
@@ -233,6 +233,26 @@ class ConnectApprovalActivityTest {
         compose.onNodeWithText("Allow").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Home").performScrollTo().performClick()
         compose.onNodeWithText("Read only").performScrollTo().performClick()
+        compose.onNodeWithText("Allow").performScrollTo().assertIsEnabled().performClick()
+        assertEquals(Activity.RESULT_OK, awaitFinished(scenario))
+        val a = assertNotNull(approvals.find("A", PKG))
+        assertEquals(Access.READ_ONLY, a.access)
+        assertEquals(Grant(false, listOf("s2")), a.grant)
+    }
+
+    /** A rotation recreates the activity; it must not reset the choices to the broadest access. */
+    @Test
+    fun choicesSurviveRecreation() {
+        install()
+        val scenario = launchShown()
+        awaitText("All spaces")
+        compose.onNodeWithText("All spaces").performScrollTo().performClick()
+        compose.onNodeWithText("Home").performScrollTo().performClick()
+        compose.onNodeWithText("Read only").performScrollTo().performClick()
+
+        scenario.recreate()
+        awaitSheet(scenario)
+        awaitText("Home")
         compose.onNodeWithText("Allow").performScrollTo().assertIsEnabled().performClick()
         assertEquals(Activity.RESULT_OK, awaitFinished(scenario))
         val a = assertNotNull(approvals.find("A", PKG))
@@ -390,6 +410,19 @@ class ConnectApprovalActivityTest {
             com.anytypeio.anytype.apibridge.access.ConnectedAppsActivity::class.java.name,
             next?.component?.className
         )
+    }
+
+    /**
+     * The sheet stays open until the user answers: leaving it for Connected apps (or anywhere
+     * else) must not cancel the request. A noHistory activity is finished as soon as the user
+     * navigates away, so the consent screen must not be declared that way.
+     */
+    @Test
+    fun consentScreenIsNotNoHistory() {
+        val info = context.packageManager.getActivityInfo(
+            android.content.ComponentName(context, ConnectApprovalActivity::class.java), 0
+        )
+        assertEquals(0, info.flags and android.content.pm.ActivityInfo.FLAG_NO_HISTORY)
     }
 
     private companion object {

@@ -149,8 +149,9 @@ can list and revoke connected apps on Anytype's "Connected apps" screen (also re
 ## 3. Call the API with standard HTTP and MCP libraries
 
 The bridge only hands out the endpoint. Talk to it with any HTTP client and any MCP client: heart
-serves REST on `/v1` and `/v2` and MCP (Streamable HTTP) on `/mcp/small`, `/mcp/large` and
-`/mcp/full`. The test app (`api-bridge-testapp`, `FlowRunner.kt`) does exactly this, and
+serves REST on `/v2` and MCP (Streamable HTTP) on `/mcp/small`, `/mcp/large` and `/mcp/full`. It
+also serves the older REST `/v1`, but only to a key with full access (see Access levels); write new
+code against `/v2`. The test app (`api-bridge-testapp`, `FlowRunner.kt`) does exactly this, and
 `scripts/api-bridge/run-contract-tests.sh` runs it against a real heart.
 
 Two rules hold for every client:
@@ -241,8 +242,10 @@ agent driven by a small model, prefer the small tier (`/mcp/small`); heart desig
 
 ### Access levels
 
-- A key narrowed to specific spaces works only with `/v2` and MCP, not `/v1`, and cannot create
-  spaces. Other spaces answer 403 `space_not_granted`.
+- Only a key with full access (all spaces, read and change) can use `/v1`. Any narrower key
+  works only with `/v2` and MCP; `/v1` answers it 403 `v1_not_available_for_scoped_keys`.
+- A key narrowed to specific spaces cannot create spaces. Other spaces answer 403
+  `space_not_granted`, and `/v2/spaces` lists only the granted ones.
 - A read-only key gets MCP tool errors (`isError: true`) on writes and 403 `write_not_granted`
   over REST.
 
