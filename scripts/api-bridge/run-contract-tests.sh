@@ -6,13 +6,13 @@
 # Usage: [HEART_DIR=../anytype-heart] run-contract-tests.sh [extra gradle args]
 #
 # HEART_DIR (default: ../anytype-heart next to this repository) must be the fork at tag
-# v0.51.6-apibridge.2 or on branch apibridge. Needs Go (GOTOOLCHAIN=auto fetches the version in
+# v0.51.6-apibridge.3 or on branch apibridge. Needs Go (GOTOOLCHAIN=auto fetches the version in
 # go.mod), cargo (for tantivy-go's static library, ~4 min, built once and cached under
 # build/api-bridge/) and a C toolchain.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-HEART_TAG="v0.51.6-apibridge.2"
+HEART_TAG="v0.51.6-apibridge.3"
 HEART_BRANCH="apibridge"
 HEART_DIR="$(cd "${HEART_DIR:-$REPO/../anytype-heart}" && pwd)"
 OUT="$REPO/build/api-bridge"

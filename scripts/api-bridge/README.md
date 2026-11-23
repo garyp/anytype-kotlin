@@ -1,6 +1,6 @@
 # API bridge tooling
 
-The app depends on `io.anyproto:anytype-heart-android:v0.51.6-apibridge.2` (`middlewareVersion`
+The app depends on `io.anyproto:anytype-heart-android:v0.51.6-apibridge.3` (`middlewareVersion`
 in `gradle/libs.versions.toml`). Upstream heart's mobile library never calls
 `api.SetMiddlewareParams`, so its JSON API answers every authenticated request with an empty 500.
 The fixed heart is built from the fork
@@ -24,11 +24,11 @@ Branch `apibridge` is upstream tag `v0.51.6` plus four commits:
    `scripts/android-libc/apply.sh`, which patches `modernc.org/libc` (see the x86_64 note below)
    and adds a `go.mod` replace. Desktop and iOS builds are unchanged.
 
-The published `v0.51.6-apibridge.2` was built from the same library code.
+`v0.51.6-apibridge.3` is built from this branch.
 
 To publish, run the fork's `Build` workflow manually (Actions tab, `Build`, "Run workflow" on
 `apibridge`) with `platform = android` and `alpha_version = <version>`, for example
-`v0.51.6-apibridge.2`. An `android` run builds only the AAR, on `ubuntu-latest`, in about 10
+`v0.51.6-apibridge.3`. An `android` run builds only the AAR, on `ubuntu-latest`, in about 10
 minutes, and publishes `io.anyproto:anytype-heart-android:<version>` to the fork's GitHub
 Packages, `https://maven.pkg.github.com/garyp/anytype-heart`. Pushing a `v*.*.*` tag also works,
 but it builds every platform on macOS and takes over two hours. A version can be published only
@@ -109,7 +109,7 @@ Control endpoints on `CONTROL_URL`:
 HEART_DIR=../anytype-heart scripts/api-bridge/run-contract-tests.sh [extra gradle args]
 ```
 
-`HEART_DIR` (default `../anytype-heart`) is a checkout of the fork at tag `v0.51.6-apibridge.2`
+`HEART_DIR` (default `../anytype-heart`) is a checkout of the fork at tag `v0.51.6-apibridge.3`
 or on branch `apibridge`; the script refuses anything else. It needs Go (`GOTOOLCHAIN=auto`
 fetches the toolchain in `go.mod`), a Rust toolchain and a C compiler.
 
