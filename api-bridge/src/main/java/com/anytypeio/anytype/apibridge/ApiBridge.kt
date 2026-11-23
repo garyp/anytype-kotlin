@@ -11,6 +11,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.launch
 
 /**
  * Process-wide entry point of the API bridge. The app calls [install] once its middleware
@@ -79,6 +80,10 @@ object ApiBridge {
             this.launcher = launcher
             this.spaces = spaces
             controller = null
+        }
+        // Like the app's other account-scoped components, follow the account lifecycle.
+        backgroundScope.launch {
+            launcher.accountStops.collect { synchronized(lock) { controller }?.onAccountStopped() }
         }
     }
 

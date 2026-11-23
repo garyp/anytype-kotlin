@@ -14,18 +14,23 @@ import com.anytypeio.anytype.apibridge.Access
 import com.anytypeio.anytype.apibridge.AccountLauncher
 import com.anytypeio.anytype.apibridge.AccountRef
 import com.anytypeio.anytype.apibridge.AccountStartException
-import com.anytypeio.anytype.apibridge.AppApprovals
 import com.anytypeio.anytype.apibridge.ApiBridge
+import com.anytypeio.anytype.apibridge.AppApprovals
 import com.anytypeio.anytype.apibridge.Approval
 import com.anytypeio.anytype.apibridge.GatewayApp
 import com.anytypeio.anytype.apibridge.Grant
 import com.anytypeio.anytype.apibridge.KeyNames
 import com.anytypeio.anytype.apibridge.LocalApiGateway
+import com.anytypeio.anytype.apibridge.MAX_LABEL_CHARS
 import com.anytypeio.anytype.apibridge.SpaceDirectory
 import com.anytypeio.anytype.apibridge.SpaceRef
-import com.anytypeio.anytype.apibridge.MAX_LABEL_CHARS
 import com.anytypeio.anytype.localization.R as Loc
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -34,9 +39,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import kotlin.test.assertEquals
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -79,7 +81,7 @@ class ConnectedAppsActivityTest {
             fail?.let { throw it }
             return AccountRef("A", "Alice").also { running = it }
         }
-        override fun generation() = 1L
+        override val accountStops: Flow<Unit> = emptyFlow()
     }
 
     private object NoSpaces : SpaceDirectory {

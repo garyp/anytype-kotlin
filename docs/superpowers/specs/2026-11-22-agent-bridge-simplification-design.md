@@ -180,3 +180,18 @@ model stay.
 - **Size.** Trimmed to the old size on the service side (77 lines of code against 76); the
   client is about 20 lines larger for the callback and the lost-binding handling, and has no
   locks.
+
+## Follow-up (2026-11-23): the bridge follows the account lifecycle like the app
+
+The cached listen address used to be checked against a counter added to
+`AwaitAccountStartManager`. The app's other account-scoped components (chat previews, space
+views, participants) instead collect `AwaitAccountStartManager.state()` and react to `Stopped`.
+The bridge now does the same: `AccountLauncher.accountStops` emits on `Stopped`,
+`ApiBridge.install` collects it, and `BridgeController.onAccountStopped()` forgets the address.
+The counter is gone, so the PR no longer changes `:domain`.
+
+A `StateFlow` conflates, so this relies on two facts, both checked: the only caller of heart's
+account stop is `Logout`, which reports `Stopped`; and heart's `AccountSelect` for the account
+that is already running returns early without closing the listener, so a repeated `Started`
+needs no handling. A logout followed by a login can't outrun the collector: the login goes
+through the UI.

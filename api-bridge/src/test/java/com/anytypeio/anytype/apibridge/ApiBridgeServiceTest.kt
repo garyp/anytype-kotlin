@@ -2,17 +2,24 @@ package com.anytypeio.anytype.apibridge
 
 import android.content.Context
 import android.content.Intent
-import androidx.test.core.app.ApplicationProvider
-import io.anytype.apibridge.IApiBridge
-import io.anytype.apibridge.ApiEndpoint
-import io.anytype.apibridge.IConnectCallback
 import android.os.DeadObjectException
-import java.util.concurrent.LinkedBlockingQueue
+import androidx.test.core.app.ApplicationProvider
+import io.anytype.apibridge.ApiEndpoint
+import io.anytype.apibridge.IApiBridge
+import io.anytype.apibridge.IConnectCallback
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.After
 import org.junit.Before
@@ -23,10 +30,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowBinder
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -55,10 +58,9 @@ class ApiBridgeServiceTest {
         override fun revokeApp(appHash: String) = Unit
     }
 
-    private class FakeLauncher : AccountLauncher {
+    private class FakeLauncher(override val accountStops: Flow<Unit> = emptyFlow()) : AccountLauncher {
         override fun runningAccount() = AccountRef("A", "Alice")
         override suspend fun ensureStarted() = AccountRef("A", "Alice")
-        override fun generation() = 1L
     }
 
     private class FakeSpaces : SpaceDirectory {
@@ -220,7 +222,7 @@ class ApiBridgeServiceTest {
                 release.await()
                 return AccountRef("A", "Alice")
             }
-            override fun generation() = 1L
+            override val accountStops: Flow<Unit> = emptyFlow()
         }, FakeSpaces())
         try {
             val e = call(bind(), 10_555, timeoutMs = 1_000)
@@ -242,7 +244,7 @@ class ApiBridgeServiceTest {
                 release.await()
                 return AccountRef("A", "Alice")
             }
-            override fun generation() = 1L
+            override val accountStops: Flow<Unit> = emptyFlow()
         }, FakeSpaces())
         approve(10_123)
         val b = bind()
@@ -266,7 +268,7 @@ class ApiBridgeServiceTest {
                 release.await()
                 return AccountRef("A", "Alice")
             }
-            override fun generation() = 1L
+            override val accountStops: Flow<Unit> = emptyFlow()
         }, FakeSpaces())
         approve(10_123)
         // send() asserts that the binder call returns while the account start still blocks.
@@ -304,7 +306,7 @@ class ApiBridgeServiceTest {
         ApiBridge.install(gateway, object : AccountLauncher {
             override fun runningAccount() = AccountRef("A", "Alice")
             override suspend fun ensureStarted(): AccountRef = awaitCancellation()
-            override fun generation() = 1L
+            override val accountStops: Flow<Unit> = emptyFlow()
         }, FakeSpaces())
         approve(10_123)
         val answers = send(bind(), 10_123) as Answers
@@ -326,7 +328,7 @@ class ApiBridgeServiceTest {
                 release.await()
                 return AccountRef("A", "Alice")
             }
-            override fun generation() = 1L
+            override val accountStops: Flow<Unit> = emptyFlow()
         }, FakeSpaces())
         approve(10_123)
         val b = bind()
@@ -464,5 +466,22 @@ class ApiBridgeServiceTest {
     @Test
     fun componentsEnabledOnApi35() {
         assertTrue(context.resources.getBoolean(R.bool.api_bridge_enabled))
+    }
+
+    /** A logout reported through [AccountLauncher.accountStops] makes the next connect bind afresh. */
+    @Test
+    fun accountStopReachesTheControllerAndTheNextConnectRebinds() {
+        val stops = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        ApiBridge.install(gateway, FakeLauncher(stops), FakeSpaces())
+        approve(1000)
+        val bridge = bind()
+        assertEquals("http://127.0.0.1:40000", call(bridge, 1000).baseUrl)
+        assertEquals("http://127.0.0.1:40000", call(bridge, 1000).baseUrl)
+        waitUntil { stops.subscriptionCount.value > 0 }
+        stops.tryEmit(Unit)
+        waitUntil {
+            call(bridge, 1000).baseUrl == "http://127.0.0.1:40001"
+        }
+        assertEquals(listOf(BridgeController.LISTEN, BridgeController.LISTEN), listenCalls())
     }
 }

@@ -65,9 +65,6 @@ class BridgeController(
     /** The address heart's local API listens on; guarded by [mutex]. */
     private var listenAddr: String? = null
 
-    /** [AccountLauncher.generation] when [listenAddr] was bound; guarded by [mutex]. */
-    private var listenGeneration = 0L
-
     /** Revoke retry loops by account id; guarded by itself. */
     private val retries = mutableMapOf<String, Job>()
 
@@ -243,25 +240,20 @@ class BridgeController(
         pkg !in approvals.pendingRevokes(accountId)
     }
 
-    /**
-     * Reuses the cached address only while the account has not restarted since the bind. Heart
-     * drops its listener on every account start and stop, and any local app may then bind the old
-     * port: the old address would hand the caller that app's server. Every start and stop goes
-     * through [AccountLauncher.generation], and heart closes the listener on nothing else.
-     */
+    /** Reuses the cached address until the account stops ([onAccountStopped]) or a bind fails. */
     private fun ensureListening(): String {
-        // Read before binding: a restart during the bind leaves a stale generation behind, so
-        // the next connect binds again.
-        val generation = launcher.generation()
-        listenAddr?.let { if (generation == listenGeneration) return it }
-        // A failed bind means heart has already closed the old listener.
-        listenAddr = null
+        listenAddr?.let { return it }
         val bound = gateway.setListenAddr(LISTEN)
             ?: throw IllegalStateException("heart reported no listen address")
         listenAddr = bound
-        listenGeneration = generation
         return bound
     }
+
+    /**
+     * Forgets the listen address: heart closed the listener when the account stopped, and any
+     * local app may now hold the port, so the next connect binds afresh.
+     */
+    suspend fun onAccountStopped() = mutex.withLock { listenAddr = null }
 
     private fun keyFor(approval: Approval, apps: List<GatewayApp>): String {
         val name = KeyNames.name(approval.packageName, approval.certSha256)

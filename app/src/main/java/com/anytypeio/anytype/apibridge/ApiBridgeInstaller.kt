@@ -14,7 +14,10 @@ import com.anytypeio.anytype.middleware.localapi.LocalApiControl
 import dagger.Lazy
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
@@ -87,8 +90,10 @@ class MiddlewareAccountLauncher(
         return AccountRef(id = id, name = cachedName?.takeIf { it.first == id }?.second.orEmpty())
     }
 
-    /** Every start and stop reports to [AwaitAccountStartManager], which counts them. */
-    override fun generation(): Long = awaitAccountStart.generation()
+    /** Logout reports [AwaitAccountStartManager.State.Stopped]; it is the only path that stops heart. */
+    override val accountStops: Flow<Unit> = awaitAccountStart.state()
+        .filterIsInstance<AwaitAccountStartManager.State.Stopped>()
+        .map { }
 
     override suspend fun ensureStarted(): AccountRef = mutex.withLock {
         val mnemonic = try {

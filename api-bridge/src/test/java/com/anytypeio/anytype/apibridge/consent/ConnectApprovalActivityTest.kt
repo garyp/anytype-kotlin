@@ -13,11 +13,11 @@ import androidx.activity.ComponentDialog
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isEnabled
-import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -29,14 +29,21 @@ import com.anytypeio.anytype.apibridge.Access
 import com.anytypeio.anytype.apibridge.AccountLauncher
 import com.anytypeio.anytype.apibridge.AccountRef
 import com.anytypeio.anytype.apibridge.AccountStartException
-import com.anytypeio.anytype.apibridge.AppApprovals
 import com.anytypeio.anytype.apibridge.ApiBridge
+import com.anytypeio.anytype.apibridge.AppApprovals
 import com.anytypeio.anytype.apibridge.GatewayApp
 import com.anytypeio.anytype.apibridge.Grant
 import com.anytypeio.anytype.apibridge.LocalApiGateway
 import com.anytypeio.anytype.apibridge.SpaceDirectory
 import com.anytypeio.anytype.apibridge.SpaceRef
+import com.anytypeio.anytype.localization.R as Loc
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -47,11 +54,6 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowDialog
 import org.robolectric.shadows.ShadowToast
-import com.anytypeio.anytype.localization.R as Loc
-import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -82,7 +84,7 @@ class ConnectApprovalActivityTest {
             fail?.let { throw it }
             return AccountRef("A", accountName)
         }
-        override fun generation() = 1L
+        override val accountStops: Flow<Unit> = emptyFlow()
     }
 
     private object FakeSpaces : SpaceDirectory {

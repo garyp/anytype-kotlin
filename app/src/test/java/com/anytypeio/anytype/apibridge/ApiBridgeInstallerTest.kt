@@ -14,8 +14,14 @@ import com.anytypeio.anytype.domain.multiplayer.SpaceViewSubscriptionContainer
 import com.anytypeio.anytype.middleware.localapi.LocalApiApp
 import com.anytypeio.anytype.middleware.localapi.LocalApiControl
 import dagger.Lazy
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.fail
@@ -56,8 +62,15 @@ class ApiBridgeInstallerTest {
     )
 
     @Test
-    fun generationFollowsEveryAccountStartAndStop() {
-        val manager = AwaitAccountStartManager.Default
+    fun accountStopsEmitOnLogoutOnly() = runTest {
+        val manager = object : AwaitAccountStartManager {
+            val state = MutableStateFlow<AwaitAccountStartManager.State>(AwaitAccountStartManager.State.Init)
+            override fun state(): Flow<AwaitAccountStartManager.State> = state
+            override fun setState(state: AwaitAccountStartManager.State) { this.state.value = state }
+            override fun awaitStart() = state.filterIsInstance<AwaitAccountStartManager.State.Started>()
+            override fun awaitStopped() = state.filterIsInstance<AwaitAccountStartManager.State.Stopped>()
+            override fun hasStarted() = state.value is AwaitAccountStartManager.State.Started
+        }
         val launcher = MiddlewareAccountLauncher(
             auth = Lazy { authWithMnemonic("m") },
             configStorage = Lazy { configStorage },
@@ -66,15 +79,16 @@ class ApiBridgeInstallerTest {
             launchAccount = Lazy { launchAccount },
             profileName = { null }
         )
-        val g0 = launcher.generation()
+        val stops = mutableListOf<Unit>()
+        val job = launch(UnconfinedTestDispatcher(testScheduler)) { launcher.accountStops.toList(stops) }
         manager.setState(AwaitAccountStartManager.State.Started)
-        val g1 = launcher.generation()
-        // A restart reports Started again; the state flow would not emit, the generation moves.
-        manager.setState(AwaitAccountStartManager.State.Started)
-        val g2 = launcher.generation()
+        assertEquals(0, stops.size)
         manager.setState(AwaitAccountStartManager.State.Stopped)
-        val g3 = launcher.generation()
-        assertEquals(listOf(g0 + 1, g0 + 2, g0 + 3), listOf(g1, g2, g3))
+        assertEquals(1, stops.size)
+        manager.setState(AwaitAccountStartManager.State.Started)
+        manager.setState(AwaitAccountStartManager.State.Stopped)
+        assertEquals(2, stops.size)
+        job.cancel()
     }
 
     @Test

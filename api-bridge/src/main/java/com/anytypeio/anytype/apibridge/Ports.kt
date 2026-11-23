@@ -1,5 +1,7 @@
 package com.anytypeio.anytype.apibridge
 
+import kotlinx.coroutines.flow.Flow
+
 data class AccountRef(val id: String, val name: String)
 data class SpaceRef(val id: String, val name: String)
 
@@ -26,11 +28,12 @@ interface AccountLauncher {
     suspend fun ensureStarted(): AccountRef
 
     /**
-     * Changes on every account start and stop, whoever caused it (the bridge, login, logout,
-     * account switch, a network-mode change). Heart drops its local API listener on each, so the
-     * bridge never reuses a listen address from an earlier generation.
+     * Emits when the account stops (logout). Heart closes its local API listener then, and any
+     * local app may take the port, so the bridge forgets the address. Restarting a running
+     * account always goes through a stop: heart keeps the listener when the running account is
+     * selected again.
      */
-    fun generation(): Long
+    val accountStops: Flow<Unit>
 }
 
 interface SpaceDirectory {

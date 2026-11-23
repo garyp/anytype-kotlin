@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import io.anytype.apibridge.IApiBridge
 import java.io.IOException
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.Dispatchers
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -92,9 +94,7 @@ class BridgeControllerTest {
 
         override fun runningAccount(): AccountRef? = account
 
-        /** Bumped by a test to simulate an account restart. */
-        var generation = 1L
-        override fun generation() = generation
+        override val accountStops: Flow<Unit> = emptyFlow()
 
         /** Real starts only: calls that found no running account. */
         var realStarts = 0
@@ -350,8 +350,8 @@ class BridgeControllerTest {
         approve(1000, approval())
         val c = controller()
         assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
-        // A later account restart forces a new bind, which fails.
-        launcher.generation++
+        // After a logout the next connect binds again, and that bind fails.
+        c.onAccountStopped()
         gateway.failBinds = 1
         val failed = assertIs<BridgeController.ConnectResult.Error>(c.connect(1000))
         assertEquals(IApiBridge.API_FAILED, failed.code)
@@ -532,18 +532,18 @@ class BridgeControllerTest {
     }
 
     @Test
-    fun accountRestartRebinds() = runTest {
+    fun accountStopForgetsTheListener() = runTest {
         approve(1000, approval())
         val c = controller()
         val first = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
         assertEquals("http://127.0.0.1:40000", first.baseUrl)
-        // Heart dropped the listener on an account restart, and another app may now hold the old
-        // port. The old address must never be handed out.
-        launcher.generation++
+        // Heart closed the listener when the account stopped, and another app may now hold the
+        // old port. The old address must never be handed out.
+        c.onAccountStopped()
         val second = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
         assertEquals("http://127.0.0.1:40001", second.baseUrl)
         assertEquals(listOf(BridgeController.LISTEN, BridgeController.LISTEN), gateway.listenCalls)
-        // Same generation again: the new address is reused.
+        // No stop since: the new address is reused.
         val third = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
         assertEquals(second.baseUrl, third.baseUrl)
         assertEquals(2, gateway.listenCalls.size)
