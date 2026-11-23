@@ -102,8 +102,7 @@ fun interface CertLookup {
  * RESULT_OK; everything else returns RESULT_CANCELED.
  *
  * The caller is only ever the one the system reports ([CallerIdentity]); Intent extras are ignored.
- * [AppApprovals] commits to disk under a process-wide lock, so every call to it, and the
- * package lookups, run on [Dispatchers.IO].
+ * The package lookups run on [Dispatchers.IO]; [AppApprovals] does its own I/O.
  *
  * An AppCompatActivity, so it follows Anytype's own Light/Dark setting
  * (`AppCompatDelegate.setDefaultNightMode`).
@@ -146,7 +145,7 @@ class ConnectApprovalActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         setResult(RESULT_CANCELED)
 
-        approvals = AppApprovals(applicationContext)
+        approvals = ApiBridge.approvals(applicationContext)
         val c = callerIdentity.resolve(this)
         if (c == null || c.packageName == packageName) {
             reject(Loc.string.api_bridge_unverified_caller)
@@ -256,7 +255,7 @@ class ConnectApprovalActivity : AppCompatActivity() {
         val approval = Approval(acc.id, pkg, certSha, s.access, s.grant(), System.currentTimeMillis())
         lifecycleScope.launch {
             try {
-                withContext(Dispatchers.IO) { approvals.approve(approval) }
+                approvals.approve(approval)
                 setResult(RESULT_OK)
             } catch (e: CancellationException) {
                 throw e
@@ -273,7 +272,7 @@ class ConnectApprovalActivity : AppCompatActivity() {
         answer = Answer.DENY
         lifecycleScope.launch {
             try {
-                withContext(Dispatchers.IO) { approvals.deny(pkg) }
+                approvals.deny(pkg)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

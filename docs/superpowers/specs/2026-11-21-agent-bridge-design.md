@@ -309,7 +309,9 @@ proto sync.
 
 ### Approvals store
 
-- **Format:** a single JSON blob in a module-private `SharedPreferences` file. Each entry is
+- **Format:** (now a typed Jetpack DataStore with a kotlinx.serialization JSON schema; see the
+  2026-11-23 follow-up in `2026-11-22-agent-bridge-simplification-design.md`) a single JSON
+  blob in a module-private `SharedPreferences` file. Each entry is
   `{accountId, package, certSha256, access, allSpaces, spaceIds, approvedAt}`, plus a `deniedUntil` map and a
   `pendingRevoke` set of `{accountId, package}`.
 - **Per account:** an approval covers the Anytype account that was active when the user
@@ -424,8 +426,8 @@ The tests run in four layers.
   disabled.
 - **Access:** the user picks all spaces (the default) or specific spaces, and Read & write or
   Read only, at consent. Editing a grant later is deferred.
-- **Keys:** stored only in heart and looked up by a name scheme. Approvals live in plain
-  SharedPreferences, excluded from backup.
+- **Keys:** stored only in heart and looked up by a name scheme. Approvals live in a plain
+  JSON file (a DataStore since 2026-11-23), excluded from backup.
 - **Settings entry:** through Android's App info gear and the consent screen. Anytype's own
   settings screens are unchanged.
 - **Denial cooldown:** 30 s.

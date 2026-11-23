@@ -10,8 +10,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 /**
  * Process-wide entry point of the API bridge. The app calls [install] once its middleware
@@ -39,6 +42,15 @@ object ApiBridge {
 
     private var controller: BridgeController? = null
     private val lock = Any()
+
+    /** The process's one approvals store, and the scope its DataStore runs in; guarded by [lock]. */
+    private var approvals: AppApprovals? = null
+    private var approvalsScope: CoroutineScope? = null
+
+    /** Test seam: replaces the approvals store, so a test owns its file. */
+    @VisibleForTesting
+    @Volatile
+    internal var approvalsOverride: AppApprovals? = null
 
     /**
      * Distinct bind intents currently bound. The system calls onBind/onUnbind once per intent
@@ -87,6 +99,21 @@ object ApiBridge {
         }
     }
 
+    /**
+     * The approvals store. DataStore allows one instance per file in a process, so every user
+     * (controller, caller check, consent and access screens) shares this one. Works before
+     * [install].
+     */
+    internal fun approvals(context: Context): AppApprovals = synchronized(lock) {
+        approvalsOverride?.let { return it }
+        approvals?.let { return it }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        AppApprovals(approvalsDataStore(context.applicationContext, scope)).also {
+            approvals = it
+            approvalsScope = scope
+        }
+    }
+
     /** Null until [install] has run. */
     internal fun controller(context: Context): BridgeController? = synchronized(lock) {
         controller?.let { return it }
@@ -94,13 +121,13 @@ object ApiBridge {
         val launcher = launcher ?: return null
         if (Build.VERSION.SDK_INT < 35) return null
         val app = context.applicationContext
-        val approvals = AppApprovals(app)
+        val store = approvals(app)
         BridgeController(
             gateway = gateway,
             launcher = launcher,
-            approvals = approvals,
+            approvals = store,
             callerApprovals = callerApprovalsOverride
-                ?: CallerVerifier(app.packageManager, approvals),
+                ?: CallerVerifier(app.packageManager, store),
             dispatcher = Dispatchers.IO,
             idle = ::idle,
             retryScope = backgroundScope
@@ -114,6 +141,12 @@ object ApiBridge {
         spaces = null
         controller = null
         callerApprovalsOverride = null
+        approvalsOverride = null
+        // Closes the default store's file, and waits until DataStore lets go of it, so the
+        // next test may open it again.
+        approvalsScope?.let { runBlocking { it.coroutineContext.job.cancelAndJoin() } }
+        approvalsScope = null
+        approvals = null
         unbindDispatcher = Dispatchers.IO
         activeBindings.set(0)
         // Revoke retries of an earlier test's controller would sweep this test's store.

@@ -1,7 +1,5 @@
 package com.anytypeio.anytype.apibridge
 
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import io.anytype.apibridge.IApiBridge
 import java.io.IOException
 import kotlinx.coroutines.flow.emptyFlow
@@ -32,8 +30,6 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class BridgeControllerTest {
-
-    private val context: Context get() = ApplicationProvider.getApplicationContext()
 
     private class FakeGateway : LocalApiGateway {
         val listenCalls = mutableListOf<String>()
@@ -121,10 +117,11 @@ class BridgeControllerTest {
 
     @Before
     fun setUp() {
-        context.getSharedPreferences("api_bridge", Context.MODE_PRIVATE).edit().clear().commit()
         gateway = FakeGateway()
         launcher = FakeLauncher()
-        approvals = AppApprovals(context)
+        // In memory: nothing in it dispatches, so virtual time stays deterministic, and a
+        // gateway hook can block on it. AppApprovalsTest covers the file-backed store.
+        approvals = AppApprovals(InMemoryDataStore(ApprovalsState()))
         approved.clear()
         bound = true
     }
@@ -138,7 +135,7 @@ class BridgeControllerTest {
     ) = Approval(account, pkg, cert, access, grant, 5L)
 
     /** Approves in the store too, then clears the pending revoke so tests start clean. */
-    private fun approve(uid: Int, a: Approval) {
+    private suspend fun approve(uid: Int, a: Approval) {
         approved[uid to a.accountId] = a
         approvals.approve(a)
         approvals.clearPendingRevoke(a.accountId, a.packageName)
@@ -252,7 +249,7 @@ class BridgeControllerTest {
         approve(1000, approval())
         gateway.onCreate = {
             gateway.onCreate = null
-            approvals.revoke("A", "com.x")
+            runBlocking { approvals.revoke("A", "com.x") }
             gateway.failRevoke = true
         }
         assertEquals(BridgeController.ConnectResult.ApprovalRequired, controller().connect(1000))
@@ -271,7 +268,7 @@ class BridgeControllerTest {
         // package and cert with a narrower grant.
         gateway.onCreate = {
             gateway.onCreate = null
-            approvals.approve(approval(access = Access.READ_ONLY, grant = Grant(false, listOf("s1"))))
+            runBlocking { approvals.approve(approval(access = Access.READ_ONLY, grant = Grant(false, listOf("s1")))) }
         }
         val r = controller().connect(1000)
         assertEquals(BridgeController.ConnectResult.ApprovalRequired, r)
@@ -283,7 +280,7 @@ class BridgeControllerTest {
         approve(1000, approval())
         gateway.onCreate = {
             gateway.onCreate = null
-            approvals.approve(approval().copy(approvedAt = 99L))
+            runBlocking { approvals.approve(approval().copy(approvedAt = 99L)) }
         }
         assertIs<BridgeController.ConnectResult.Ready>(controller().connect(1000))
     }

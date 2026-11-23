@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
  * approval for that account, sweep keys pending revocation, make sure heart's local API listens,
  * and hand out the caller's key. The mutex keeps the listener and key state whole: one bind at a
  * time, no duplicate keys, and no close of the listener in the middle of a connect. Blocking work
- * (gateway, approvals store) runs on [dispatcher].
+ * (gateway, package manager) runs on [dispatcher]; the approvals store does its own I/O.
  *
  * [revokeApp] takes no lock, so it never waits behind a connect that is starting the account.
  * It still cannot leave a revoked app with a working key, because of the order of the steps on
@@ -69,11 +69,12 @@ class BridgeController(
     private val retries = mutableMapOf<String, Job>()
 
     /**
-     * False when [uid] is approved under no account. Blocking but cheap, and takes no lock: the
-     * service answers such a caller at once, so it never waits on the mutex or starts an account.
+     * False when [uid] is approved under no account. Cheap, and takes no lock: the service
+     * answers such a caller at once, so it never waits on the mutex or starts an account.
      * [connect] checks the same again under the mutex.
      */
-    fun isApprovedAnywhere(uid: Int): Boolean = callerApprovals.verifiedApprovals(uid).isNotEmpty()
+    suspend fun isApprovedAnywhere(uid: Int): Boolean =
+        withContext(dispatcher) { callerApprovals.verifiedApprovals(uid) }.isNotEmpty()
 
     suspend fun connect(uid: Int): ConnectResult = mutex.withLock {
         val result = try {
@@ -93,9 +94,7 @@ class BridgeController(
     private suspend fun connectLocked(uid: Int): ConnectResult {
         // 0. A caller approved under no account learns nothing, and starts nothing. The service
         // turns such callers away before they get here; this catches an approval revoked since.
-        if (withContext(dispatcher) { callerApprovals.verifiedApprovals(uid) }.isEmpty()) {
-            return ConnectResult.ApprovalRequired
-        }
+        if (!isApprovedAnywhere(uid)) return ConnectResult.ApprovalRequired
 
         // 1. Account.
         val account = try {
@@ -159,7 +158,7 @@ class BridgeController(
      *
      * Throws when a key of [callerPkg] could not be revoked, so that key is never handed out.
      */
-    private fun sweep(accountId: String, callerPkg: String?, listed: List<GatewayApp>): List<GatewayApp> {
+    private suspend fun sweep(accountId: String, callerPkg: String?, listed: List<GatewayApp>): List<GatewayApp> {
         val apps = listed.toMutableList()
         var callerFailure: Exception? = null
         for (pkg in approvals.pendingRevokes(accountId)) {
@@ -183,7 +182,7 @@ class BridgeController(
     }
 
     /** [sweep] for no caller; a failure only logs, and the pending entries stay. */
-    private fun sweepQuietly(accountId: String) {
+    private suspend fun sweepQuietly(accountId: String) {
         if (approvals.pendingRevokes(accountId).isEmpty()) return
         try {
             sweep(accountId, null, gateway.listApps())
@@ -285,7 +284,8 @@ class BridgeController(
      */
     suspend fun onAllUnbound() {
         mutex.withLock {
-            // Both reads are in memory: switch threads only when there is work, and only once.
+            // Both reads are cheap (the store keeps its state in memory): switch threads only
+            // when there is work, and only once.
             val sweepFor = launcher.runningAccount()?.id
                 ?.takeIf { approvals.pendingRevokes(it).isNotEmpty() }
             if (sweepFor == null && (listenAddr == null || !idle())) return

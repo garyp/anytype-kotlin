@@ -14,12 +14,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.After
 import org.junit.Before
@@ -75,9 +78,17 @@ class ApiBridgeServiceTest {
     private val otherIntent = Intent(ApiBridge.ACTION_BIND).addCategory("com.example.OTHER")
     private lateinit var service: ServiceController<ApiBridgeService>
 
+    /**
+     * In memory: nothing in it dispatches, so the unbind close stays on the queued test
+     * dispatchers below. [everyUserSharesOneApprovalsStore] covers the file-backed store.
+     */
+    private lateinit var store: AppApprovals
+
     @Before
     fun setUp() {
         ApiBridge.resetForTest()
+        store = AppApprovals(InMemoryDataStore(ApprovalsState()))
+        ApiBridge.approvalsOverride = store
         gateway = FakeGateway()
         approved.clear()
         ApiBridge.callerApprovalsOverride = CallerApprovals { uid -> listOfNotNull(approved[uid]) }
@@ -154,9 +165,10 @@ class ApiBridgeServiceTest {
         val a = Approval("A", "com.x", "abcdef", Access.READ_WRITE, Grant.ALL, 1L)
         approved[uid] = a
         // Connect re-checks the store before handing out a key.
-        val store = AppApprovals(ApplicationProvider.getApplicationContext())
-        store.approve(a)
-        store.clearPendingRevoke("A", "com.x")
+        runBlocking {
+            store.approve(a)
+            store.clearPendingRevoke("A", "com.x")
+        }
     }
 
     private fun listenCalls() = synchronized(gateway) { gateway.listenCalls.toList() }
@@ -349,6 +361,20 @@ class ApiBridgeServiceTest {
         // Once it has finished, a later call runs a connect of its own.
         assertEquals(IApiBridge.OK, call(b, 10_123).code)
         assertEquals(2, starts.get())
+    }
+
+    /** DataStore allows one instance per file: every user shares the holder's store. */
+    @Test
+    fun everyUserSharesOneApprovalsStore() {
+        ApiBridge.approvalsOverride = null
+        val first = ApiBridge.approvals(context)
+        assertSame(first, ApiBridge.approvals(context))
+        runBlocking { first.deny("com.shared") }
+        // The reset closes the file; a new store on it reads what the first one wrote.
+        ApiBridge.resetForTest()
+        val second = ApiBridge.approvals(context)
+        assertNotSame(first, second)
+        assertTrue(runBlocking { second.isInDenialCooldown("com.shared") })
     }
 
     @Test

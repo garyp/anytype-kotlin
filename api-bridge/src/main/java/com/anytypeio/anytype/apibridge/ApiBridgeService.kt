@@ -20,11 +20,11 @@ import kotlinx.coroutines.launch
  *
  * [IApiBridge.connect] is a oneway call: it reads the calling uid on the binder thread and
  * returns at once, and the answer goes to the caller's [IConnectCallback] when it is ready. No
- * binder thread waits for an account start or the controller mutex. A caller approved under no
- * account is answered APPROVAL_REQUIRED on the binder thread, before anything waits; every other
- * connect runs in [ApiBridge.backgroundScope]. Calls from one uid share the connect in flight
- * ([ApiBridge.inFlightConnects]): a second call while one runs gets the same result, so one uid
- * holds at most one connect, and each extra call costs only a completion handler.
+ * binder thread waits for anything: the rest runs in [ApiBridge.backgroundScope]. There, a
+ * caller approved under no account is answered APPROVAL_REQUIRED first, before it can wait on
+ * the controller mutex or start the account. Calls from one approved uid share the connect in
+ * flight ([ApiBridge.inFlightConnects]): a second call while one runs gets the same result, so
+ * one uid holds at most one connect, and each extra call costs only a completion handler.
  *
  * The service sets no deadline; the client bounds its own wait. A caller that has gone away is
  * ignored when its answer is ready. Errors travel in [ApiEndpoint.code] only; details stay in the
@@ -40,19 +40,23 @@ class ApiBridgeService : Service() {
             callback ?: return
             try {
                 val controller = ApiBridge.controller(this@ApiBridgeService)
-                when {
-                    controller == null -> reply(uid, callback, failure(IApiBridge.INTERNAL, NOT_INSTALLED))
-                    // Fast path: a caller approved under no account never reaches the mutex.
-                    !controller.isApprovedAnywhere(uid) -> reply(uid, callback, failure(IApiBridge.APPROVAL_REQUIRED))
-                    else -> ApiBridge.backgroundScope.launch {
-                        val endpoint = try {
+                if (controller == null) {
+                    reply(uid, callback, failure(IApiBridge.INTERNAL, NOT_INSTALLED))
+                    return
+                }
+                ApiBridge.backgroundScope.launch {
+                    val endpoint = try {
+                        // Fast path: a caller approved under no account never reaches the mutex.
+                        if (!controller.isApprovedAnywhere(uid)) {
+                            failure(IApiBridge.APPROVAL_REQUIRED)
+                        } else {
                             endpoint(sharedConnect(controller, uid).await())
-                        } catch (e: Throwable) {
-                            // Cancelled with the scope, or a failure the controller let through.
-                            failure(IApiBridge.INTERNAL, e.toString())
                         }
-                        reply(uid, callback, endpoint)
+                    } catch (e: Throwable) {
+                        // Cancelled with the scope, or a failure the controller let through.
+                        failure(IApiBridge.INTERNAL, e.toString())
                     }
+                    reply(uid, callback, endpoint)
                 }
             } catch (e: Exception) {
                 // Never let an exception cross the binder: the caller gets a code, nothing more.

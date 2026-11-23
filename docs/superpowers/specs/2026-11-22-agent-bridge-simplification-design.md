@@ -195,3 +195,33 @@ account stop is `Logout`, which reports `Stopped`; and heart's `AccountSelect` f
 that is already running returns early without closing the listener, so a repeated `Started`
 needs no handling. A logout followed by a login can't outrun the collector: the login goes
 through the UI.
+
+## Follow-up (2026-11-23): approvals in a DataStore
+
+The user asked for Jetpack DataStore with a JSON schema instead of raw `SharedPreferences`
+access for the approvals store. Nothing of the bridge was released, so there is no migration
+from the old prefs file and no compatibility code.
+
+- **Schema.** A typed `DataStore<ApprovalsState>` (datastore core, not Preferences).
+  `ApprovalsState` is `@Serializable`: a `version` field (1), `approvals`, `pending` and
+  `deniedUntil`. The domain types `Approval`, `Grant`, `Access` and `PendingRevoke` are
+  `@Serializable` themselves; deserialization runs `Grant`'s `init`, so a stored grant that
+  breaks its rule is rejected.
+- **Tolerance.** `ApprovalsSerializer` parses the root as a `JsonObject` and decodes each
+  approval, pending revoke and cooldown on its own, skipping a bad entry and never the rest
+  (losing a pending revoke would leave a revoked app's key valid). A file that is not a JSON
+  object goes to a `ReplaceFileCorruptionHandler`, which starts from an empty state: the pending
+  revokes in it are lost, but every connect and screen keeps working, so the user can still
+  revoke.
+- **One instance.** DataStore allows one instance per file in a process. `ApiBridge.approvals()`
+  creates it once, on `files/datastore/api_bridge_approvals.json`, in its own IO scope, and the
+  controller, the caller check and both screens share it. Tests replace it through
+  `ApiBridge.approvalsOverride`, which `resetForTest` clears; `resetForTest` also closes the
+  default store and waits until DataStore releases the file.
+- **Suspend.** `AppApprovals` and `CallerApprovals.verifiedApprovals` suspend; `updateData`
+  serializes read-modify-write, so the process-wide lock is gone. The service's check for a
+  caller approved under no account moves from the binder thread into the coroutine it launches:
+  the binder call still returns at once, and such a caller is still answered before it can wait
+  on the controller mutex or start the account. The locking of the controller is unchanged.
+- **Backup.** The data extraction rules exclude `datastore/api_bridge_approvals.json` from
+  cloud backup and device transfer, in place of the old prefs file.

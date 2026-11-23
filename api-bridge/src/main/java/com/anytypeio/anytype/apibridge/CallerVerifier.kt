@@ -7,8 +7,11 @@ import java.security.MessageDigest
 
 /** Which approvals a calling app (by Binder UID) holds. A test seam over [CallerVerifier]. */
 fun interface CallerApprovals {
-    /** The UID's approvals, under any account, whose pinned signing cert still verifies. */
-    fun verifiedApprovals(uid: Int): List<Approval>
+    /**
+     * The UID's approvals, under any account, whose pinned signing cert still verifies. Makes
+     * blocking package manager calls: call it off the main thread.
+     */
+    suspend fun verifiedApprovals(uid: Int): List<Approval>
 }
 
 /**
@@ -26,7 +29,7 @@ class CallerVerifier(
     }
 ) : CallerApprovals {
 
-    override fun verifiedApprovals(uid: Int): List<Approval> {
+    override suspend fun verifiedApprovals(uid: Int): List<Approval> {
         val packages = pm.getPackagesForUid(uid)?.toSet() ?: return emptyList()
         return approvals.all().filter { a ->
             a.packageName in packages && fromHex(a.certSha256)?.let { certCheck(uid, it) } == true

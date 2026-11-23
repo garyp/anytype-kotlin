@@ -15,7 +15,8 @@ import com.anytypeio.anytype.apibridge.AccountLauncher
 import com.anytypeio.anytype.apibridge.AccountRef
 import com.anytypeio.anytype.apibridge.AccountStartException
 import com.anytypeio.anytype.apibridge.ApiBridge
-import com.anytypeio.anytype.apibridge.AppApprovals
+import com.anytypeio.anytype.apibridge.ApprovalsRule
+import com.anytypeio.anytype.apibridge.BlockingApprovals
 import com.anytypeio.anytype.apibridge.Approval
 import com.anytypeio.anytype.apibridge.GatewayApp
 import com.anytypeio.anytype.apibridge.Grant
@@ -47,8 +48,11 @@ class ConnectedAppsActivityTest {
     @get:Rule
     val compose = createEmptyComposeRule()
 
+    @get:Rule
+    val files = ApprovalsRule()
+
     private val context: Context get() = ApplicationProvider.getApplicationContext()
-    private lateinit var approvals: AppApprovals
+    private lateinit var approvals: BlockingApprovals
 
     private class FakeGateway(var failRevoke: Boolean = false, var failList: Boolean = false) : LocalApiGateway {
         val apps = CopyOnWriteArrayList<GatewayApp>()
@@ -93,8 +97,8 @@ class ConnectedAppsActivityTest {
     @Before
     fun setUp() {
         ApiBridge.resetForTest()
-        context.getSharedPreferences("api_bridge", Context.MODE_PRIVATE).edit().clear().commit()
-        approvals = AppApprovals(context)
+        ApiBridge.approvalsOverride = files.approvals
+        approvals = BlockingApprovals(files.approvals)
         shadowOf(ApplicationProvider.getApplicationContext<android.app.Application>())
             .grantPermissions(android.Manifest.permission.HIDE_OVERLAY_WINDOWS)
     }

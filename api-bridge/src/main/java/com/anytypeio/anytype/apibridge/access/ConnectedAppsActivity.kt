@@ -84,8 +84,8 @@ import kotlinx.coroutines.withContext
  *
  * A revoke completes even when the user leaves the screen before it is done.
  *
- * [AppApprovals] commits to disk under a process-wide lock and the gateway makes blocking
- * calls, so all of it, and the package lookups, run on [Dispatchers.IO].
+ * The gateway makes blocking calls, so they, and the package lookups, run on [Dispatchers.IO];
+ * [AppApprovals] does its own I/O.
  *
  * An AppCompatActivity, so it follows Anytype's own Light/Dark setting.
  */
@@ -120,7 +120,7 @@ class ConnectedAppsActivity : AppCompatActivity() {
         // No other app may draw over a screen whose buttons remove access, and no screenshots.
         window.setHideOverlayWindows(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        approvals = AppApprovals(applicationContext)
+        approvals = ApiBridge.approvals(applicationContext)
         setContentView(ComposeView(this).apply {
             filterTouchesWhenObscured = true
             setAccessibilityDataSensitive(View.ACCESSIBILITY_DATA_SENSITIVE_YES)
@@ -190,7 +190,7 @@ class ConnectedAppsActivity : AppCompatActivity() {
     private suspend fun revoke(accountId: String, pkg: String): Boolean = withContext(NonCancellable) {
         val controller = ApiBridge.controller(applicationContext)
         if (controller == null) {
-            withContext(Dispatchers.IO) { approvals.revoke(accountId, pkg) }
+            approvals.revoke(accountId, pkg)
             true
         } else {
             controller.revokeApp(accountId, pkg)

@@ -30,7 +30,8 @@ import com.anytypeio.anytype.apibridge.AccountLauncher
 import com.anytypeio.anytype.apibridge.AccountRef
 import com.anytypeio.anytype.apibridge.AccountStartException
 import com.anytypeio.anytype.apibridge.ApiBridge
-import com.anytypeio.anytype.apibridge.AppApprovals
+import com.anytypeio.anytype.apibridge.ApprovalsRule
+import com.anytypeio.anytype.apibridge.BlockingApprovals
 import com.anytypeio.anytype.apibridge.GatewayApp
 import com.anytypeio.anytype.apibridge.Grant
 import com.anytypeio.anytype.apibridge.LocalApiGateway
@@ -62,8 +63,11 @@ class ConnectApprovalActivityTest {
     @get:Rule
     val compose = createEmptyComposeRule()
 
+    @get:Rule
+    val files = ApprovalsRule()
+
     private val context: Context get() = ApplicationProvider.getApplicationContext()
-    private lateinit var approvals: AppApprovals
+    private lateinit var approvals: BlockingApprovals
     private val started = AtomicInteger()
 
     private object NoGateway : LocalApiGateway {
@@ -98,8 +102,8 @@ class ConnectApprovalActivityTest {
         // A normal permission: granted at install on a device, not by Robolectric.
         shadowOf(ApplicationProvider.getApplicationContext<android.app.Application>())
             .grantPermissions(android.Manifest.permission.HIDE_OVERLAY_WINDOWS)
-        context.getSharedPreferences("api_bridge", Context.MODE_PRIVATE).edit().clear().commit()
-        approvals = AppApprovals(context)
+        ApiBridge.approvalsOverride = files.approvals
+        approvals = BlockingApprovals(files.approvals)
         started.set(0)
         ConnectApprovalActivity.callerIdentity = CallerIdentity { Caller(10_123, PKG) }
         ConnectApprovalActivity.certLookup = CertLookup { _, pkg -> if (pkg == PKG) CERT else null }
