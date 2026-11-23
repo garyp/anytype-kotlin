@@ -35,7 +35,6 @@ on:
   push:
     branches:
       - main
-      - ccr-f214df8b-69606d # TEMPORARY: tests heart access with the workflow token
 
 permissions:
   contents: read
