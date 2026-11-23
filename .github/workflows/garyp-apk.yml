@@ -1,0 +1,221 @@
+# Fork-only workflow: builds signed release APKs of this fork and publishes them as a GitHub
+# pre-release, so the app can be installed (and kept up to date) with Obtainium.
+#
+# It follows upstream's build-github-release-with-apks.yml step by step; keep the two in sync when
+# upstream changes. The steps that differ are marked "Fork:". Everything fork-specific (version,
+# application ID, ABIs, Firebase package name) is edited in the CI checkout only; nothing is
+# committed.
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   FORK_SIGNING_KEY        base64-encoded keystore
+#   FORK_KEY_ALIAS          key alias in the keystore
+#   FORK_KEY_STORE_PASSWORD keystore password
+#   FORK_KEY_PASSWORD       key password
+# Keep the keystore safe: Android only installs updates signed with the same key.
+#
+# Versioning follows upstream's version on the built ref and this workflow's run number, so it is
+# deterministic (re-running a run produces the same version):
+#   versionName = <upstream versionName>-garyp.<run number>
+#   versionCode = <upstream versionCode> * 100000 + <run number>
+# Upstream's versionCode is major * 1000 + minor * 100 + patch (versioning.gradle). This keeps
+# increasing across upstream versions for up to 99999 runs. Renaming this workflow file resets the
+# run number, which would produce lower versionCodes than already installed builds.
+#
+# Builds do without what the fork can't use: push notifications (Anytype's Firebase project doesn't
+# know this application ID), analytics and crash reporting (no Amplitude or Sentry keys).
+name: garyp - APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build
+        required: true
+        default: main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: garyp-apk
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    name: Build and Upload to GitHub Release
+    # Never run in the upstream repository, even if this file ends up there.
+    if: ${{ github.repository_owner != 'anyproto' }}
+    timeout-minutes: 120
+    permissions:
+      contents: write # create releases
+      packages: read # heart from the garyp/anytype-heart registry
+    env:
+      FORK_APPLICATION_ID: com.realify.gary.anytype.app
+      FORK_ABIS: arm64-v8a x86_64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r23c
+          link-to-sdk: true
+
+      - uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: 17
+
+      - name: Grant Gradle permission
+        run: chmod +x ./gradlew
+
+      # Fork: middleware2.sh requires Anytype's own keys. Heart comes from the garyp/anytype-heart
+      # registry, read with the workflow's token; analytics and crash reporting stay off.
+      - name: Setup middleware
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf 'gpr.usr=%s\ngpr.key=%s\n' "$ACTOR" "$TOKEN" > github.properties
+          printf 'amplitude.debug=""\namplitude.release=""\nsentry_dsn=\n' > apikeys.properties
+
+          # Fail here, not 20 minutes into the build, if the token can't read heart.
+          HEART=$(sed -n -E 's/^middlewareVersion = "(.+)"$/\1/p' gradle/libs.versions.toml)
+          POM="https://maven.pkg.github.com/garyp/anytype-heart/io/anyproto/anytype-heart-android/${HEART}/anytype-heart-android-${HEART}.pom"
+          STATUS=$(curl -sSL -o /dev/null -w '%{http_code}' -u "${ACTOR}:${TOKEN}" "$POM")
+          echo "Heart ${HEART}: HTTP ${STATUS}"
+          if [[ "$STATUS" != 200 ]]; then
+            echo "::error::The workflow token can't read heart ${HEART} from garyp/anytype-heart (HTTP ${STATUS})."
+            exit 1
+          fi
+
+      # Fork: the keystore comes from a secret instead of the encrypted file in the repository.
+      - name: Decrypt secrets
+        env:
+          SIGNING_KEY: ${{ secrets.FORK_SIGNING_KEY }}
+        run: |
+          if [[ -z "$SIGNING_KEY" ]]; then
+            echo "::error::Repository secret FORK_SIGNING_KEY is not set."
+            exit 1
+          fi
+          echo "$SIGNING_KEY" | base64 -d > scripts/release/app-release.jks
+
+      - name: Setup keystore
+        env:
+          RELEASE_KEY_ALIAS: ${{ secrets.FORK_KEY_ALIAS }}
+          RELEASE_KEY_PWD: ${{ secrets.FORK_KEY_PASSWORD }}
+          RELEASE_STORE_PWD: ${{ secrets.FORK_KEY_STORE_PASSWORD }}
+        run: ./scripts/release/setup-store.sh "$RELEASE_KEY_ALIAS" "$RELEASE_KEY_PWD" "$RELEASE_STORE_PWD"
+
+      - name: Prepare Android Manifest for APKs
+        run: ./scripts/release/apk.sh
+
+      - name: "Fork: Set version, application ID and ABIs"
+        id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          PROPS=app/gradle.properties
+          prop() { sed -n -E "s/^version\.$1=([0-9]+)\s*$/\1/p" "$PROPS"; }
+          MAJOR=$(prop versionMajor); MINOR=$(prop versionMinor); PATCH=$(prop versionPatch)
+          if [[ -z "$MAJOR" || -z "$MINOR" || -z "$PATCH" ]]; then
+            echo "::error::Could not read the version from $PROPS"
+            exit 1
+          fi
+          # Upstream's versionCode, as versioning.gradle computes it.
+          UPSTREAM_CODE=$((MAJOR * 1000 + MINOR * 100 + PATCH))
+          UPSTREAM_NAME="${MAJOR}.${MINOR}.${PATCH}"
+
+          # Android's maximum versionCode is 2100000000.
+          if (( RUN_NUMBER > 99999 || UPSTREAM_CODE > 20999 )); then
+            echo "::error::versionCode would overflow (upstream ${UPSTREAM_CODE}, run ${RUN_NUMBER})"
+            exit 1
+          fi
+          VERSION_CODE=$((UPSTREAM_CODE * 100000 + RUN_NUMBER))
+          VERSION_NAME="${UPSTREAM_NAME}-garyp.${RUN_NUMBER}"
+
+          BUILD_FILE=app/build.gradle
+          ABI_LIST=$(printf '"%s", ' $FORK_ABIS); ABI_LIST=${ABI_LIST%, }
+          sed -i -E \
+            -e "s/^( *versionCode )getBuildVersionCode\(\)/\1${VERSION_CODE}/" \
+            -e "s/^( *versionName )getBuildVersionName\(\)/\1\"${VERSION_NAME}\"/" \
+            -e "s/^( *include )\"armeabi-v7a\", \"arm64-v8a\"$/\1${ABI_LIST}/" \
+            -e "s/^( *universalApk )true$/\1false/" \
+            "$BUILD_FILE"
+          grep -q "versionCode ${VERSION_CODE}$" "$BUILD_FILE"
+          grep -q "versionName \"${VERSION_NAME}\"$" "$BUILD_FILE"
+          grep -qF "include ${ABI_LIST}" "$BUILD_FILE"
+          grep -q "universalApk false$" "$BUILD_FILE"
+
+          # The Google Services plugin needs a client for the exact package name. Push messages
+          # still won't arrive: Anytype's Firebase project doesn't know this application ID.
+          FIREBASE=app/src/release/google-services.json
+          sed -i -E "s/(\"package_name\": )\"io\.anytype\.app\"/\1\"${FORK_APPLICATION_ID}\"/" "$FIREBASE"
+          grep -q "\"package_name\": \"${FORK_APPLICATION_ID}\"" "$FIREBASE"
+
+          {
+            echo "code=${VERSION_CODE}"
+            echo "name=${VERSION_NAME}"
+            echo "commit=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Upstream ${UPSTREAM_NAME} (${UPSTREAM_CODE}) -> ${VERSION_NAME} (${VERSION_CODE})"
+
+      - name: Build release APKs
+        run: ./gradlew :app:assembleRelease -PenableAbiSplits=true -Papp.applicationId="$FORK_APPLICATION_ID"
+
+      - name: Prepare artefacts
+        run: ./scripts/release/prepare-release-artefacts.sh
+
+      - name: List prepared files
+        run: ls -lh app/build/outputs/apk/release/release-artefacts/
+
+      - name: "Fork: Verify APKs"
+        env:
+          EXPECTED_CODE: ${{ steps.version.outputs.code }}
+          EXPECTED_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          AAPT2="$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)"
+          DIR=app/build/outputs/apk/release/release-artefacts
+          for ABI in $FORK_ABIS; do
+            # app/build.gradle names release APKs anytype-<versionName>-<abi>.apk.
+            APK="${DIR}/anytype-${EXPECTED_NAME}-${ABI}.apk"
+            BADGING=$("$AAPT2" dump badging "$APK")
+            echo "$BADGING" | head -n 1
+            [[ "$BADGING" == *"name='${FORK_APPLICATION_ID}'"* ]] || { echo "::error::Unexpected package in $APK"; exit 1; }
+            [[ "$BADGING" == *"versionCode='${EXPECTED_CODE}'"* ]] || { echo "::error::Unexpected versionCode in $APK"; exit 1; }
+            [[ "$BADGING" == *"versionName='${EXPECTED_NAME}'"* ]] || { echo "::error::Unexpected versionName in $APK"; exit 1; }
+            [[ "$BADGING" == *"native-code: '${ABI}'"* ]] || { echo "::error::Unexpected ABIs in $APK"; exit 1; }
+            "$APKSIGNER" verify "$APK"
+          done
+          [[ $(ls "$DIR" | wc -l) == $(wc -w <<< "$FORK_ABIS") ]] || { echo "::error::Unexpected files in $DIR"; exit 1; }
+
+      # Fork: a pre-release tagged with the versionName, so Obtainium can pick it up. A re-run
+      # produces the same version and replaces the release's APKs.
+      - name: Create and Upload GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.name }}
+          target_commitish: ${{ steps.version.outputs.commit }}
+          name: Anytype garyp build ${{ steps.version.outputs.name }}
+          body: >-
+            Unofficial build of ${{ steps.version.outputs.commit }}, versionCode
+            ${{ steps.version.outputs.code }}, application ID `${{ env.FORK_APPLICATION_ID }}`.
+          prerelease: true
+          files: app/build/outputs/apk/release/release-artefacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean secrets
+        if: always()
+        run: |
+          ./scripts/release/clean-secrets.sh
+          rm -f github.properties

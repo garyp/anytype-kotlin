@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- The consent and access screens hide other apps' overlays (tapjacking). -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
+
+    <application>
+        <!-- Connected apps bind here. Disabled below API 35, where caller verification is missing. -->
+        <service
+            android:name="com.anytypeio.anytype.apibridge.ApiBridgeService"
+            android:enabled="@bool/api_bridge_enabled"
+            android:exported="true"
+            tools:targetApi="35">
+            <intent-filter>
+                <action android:name="io.anytype.apibridge.BIND" />
+            </intent-filter>
+        </service>
+
+        <!-- Connected apps start this for result, with setShareIdentityEnabled(true), to ask for access.
+             Not noHistory: the sheet stays open until the user answers, also while they look at
+             Connected apps from its link. -->
+        <activity
+            android:name="com.anytypeio.anytype.apibridge.consent.ConnectApprovalActivity"
+            android:enabled="@bool/api_bridge_enabled"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:theme="@style/ApiBridgeConsentTheme"
+            tools:targetApi="35">
+            <intent-filter>
+                <action android:name="io.anytype.apibridge.APPROVE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Lists the apps the user approved and revokes them; also the app's "preferences" for the system. -->
+        <activity
+            android:name="com.anytypeio.anytype.apibridge.access.ConnectedAppsActivity"
+            android:enabled="@bool/api_bridge_enabled"
+            android:exported="true"
+            android:theme="@style/AppTheme"
+            tools:targetApi="35">
+            <intent-filter>
+                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

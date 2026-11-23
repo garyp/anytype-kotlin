@@ -1,0 +1,11 @@
+package io.anytype.apibridge.client
+
+sealed class BridgeException(message: String?) : Exception(message) {
+    class ApprovalRequired : BridgeException("Approval required")
+    class NotInstalled(val pkg: String) : BridgeException("Anytype bridge not available: $pkg")
+
+    /** [pkg] is not signed with the certificate the app pinned; the bridge did not bind. */
+    class Untrusted(val pkg: String) : BridgeException("Not signed with the expected certificate: $pkg")
+    /** [code] is one of the error codes on [io.anytype.apibridge.IApiBridge]. */
+    class Failed(val code: Int, detail: String) : BridgeException("Bridge failed ($code): $detail")
+}

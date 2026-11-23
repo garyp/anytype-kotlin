@@ -59,6 +59,18 @@ interface MiddlewareService {
     fun accountStop(request: Rpc.Account.Stop.Request): Rpc.Account.Stop.Response
 
     @Throws(Exception::class)
+    fun accountChangeJsonApiAddr(request: Rpc.Account.ChangeJsonApiAddr.Request): Rpc.Account.ChangeJsonApiAddr.Response
+
+    @Throws(Exception::class)
+    fun accountLocalLinkListApps(request: Rpc.Account.LocalLink.ListApps.Request): Rpc.Account.LocalLink.ListApps.Response
+
+    @Throws(Exception::class)
+    fun accountLocalLinkCreateApp(request: Rpc.Account.LocalLink.CreateApp.Request): Rpc.Account.LocalLink.CreateApp.Response
+
+    @Throws(Exception::class)
+    fun accountLocalLinkRevokeApp(request: Rpc.Account.LocalLink.RevokeApp.Request): Rpc.Account.LocalLink.RevokeApp.Response
+
+    @Throws(Exception::class)
     fun accountMigrate(request: Rpc.Account.Migrate.Request): Rpc.Account.Migrate.Response
 
     @Throws(Exception::class)

@@ -127,7 +127,8 @@ enum class EventGroup {
                 message.accountDetails != null ||
                 message.accountLinkApprovalRequest != null ||
                 message.accountLinkApprovalHide != null ||
-                message.accountRecoveryUpdate != null
+                message.accountRecoveryUpdate != null ||
+                message.accountJsonApiStatus != null
             ) {
                 mask = mask or ACCOUNT.bit
             }

@@ -26,6 +26,19 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven { url "https://jitpack.io" }
+        // anytype-heart-android with the API bridge fix comes from the garyp/anytype-heart fork
+        // (branch apibridge, tags <upstream>-apibridge.N). See docs/api-bridge/README.md.
+        maven {
+            name = "HeartFork"
+            url = uri("https://maven.pkg.github.com/garyp/anytype-heart")
+            credentials {
+                username = githubProperties['gpr.usr']
+                password = githubProperties['gpr.key']
+            }
+            content {
+                includeModule("io.anyproto", "anytype-heart-android")
+            }
+        }
         maven {
             name = "GitHubPackages"
             url = uri("https://maven.pkg.github.com/anyproto/anytype-heart")
@@ -72,5 +85,8 @@ include ':feature-properties'
 include ':feature-vault'
 include ':feature-create-object'
 include ':feature-os-widgets'
+include ':api-bridge-client'
+include ':api-bridge'
+include ':api-bridge-testapp'
 include ':feature-search'
 include ':core-ai'

@@ -8,6 +8,10 @@ import com.anytypeio.anytype.core_models.chats.Chat
 typealias MEvent = anytype.Event
 typealias MEventMessage = anytype.Event.Message
 typealias MAccount = anytype.model.Account
+typealias MAccountAuthAppInfo = anytype.model.Account.Auth.AppInfo
+typealias MAccountAuthAppGrant = anytype.model.Account.Auth.AppGrant
+typealias MAccountAuthAppGrantPerm = anytype.model.Account.Auth.AppGrant.Perm
+typealias MAccountAuthLocalApiScope = anytype.model.Account.Auth.LocalApiScope
 typealias MAccountStatus = anytype.model.Account.Status
 typealias MAccountStatusType = anytype.model.Account.StatusType
 typealias MBlock = anytype.model.Block

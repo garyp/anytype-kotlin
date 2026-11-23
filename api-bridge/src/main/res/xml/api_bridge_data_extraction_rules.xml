@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Rules for Android 12+. The app manifest references this file (android:dataExtractionRules);
+    :app has none of its own.
+
+    Once android:dataExtractionRules is set, Android 12+ ignores android:fullBackupContent, so both
+    sections below must be at least as strict as :app's res/xml/my_backup_rules.xml, which excludes
+    every shared-preferences file. Keep them in step with that file.
+
+    datastore/api_bridge_approvals.json (APPROVALS_FILE in ApprovalsStore.kt) holds the app
+    approvals. They are bound to this device's apps and keys, so they must never be backed up or
+    transferred.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="datastore/api_bridge_approvals.json" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="datastore/api_bridge_approvals.json" />
+    </device-transfer>
+</data-extraction-rules>

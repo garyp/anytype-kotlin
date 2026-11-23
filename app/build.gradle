@@ -226,6 +226,7 @@ dependencies {
     implementation project(':feature-search')
     implementation project(':feature-create-object')
     implementation project(':feature-os-widgets')
+    implementation project(':api-bridge')
 
     //Compile time dependencies
     ksp libs.daggerCompiler
@@ -310,6 +311,7 @@ dependencies {
     testImplementation libs.robolectric
     testImplementation libs.kotlinTest
     testImplementation libs.mockitoKotlin
+    testImplementation libs.coroutineTesting
     testImplementation project(':test:utils')
 
     //Acceptance tests dependencies
