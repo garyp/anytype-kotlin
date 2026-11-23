@@ -152,6 +152,53 @@ class MiddlewareServiceImplementation @Inject constructor(
         }
     }
 
+    override fun accountChangeJsonApiAddr(request: Rpc.Account.ChangeJsonApiAddr.Request): Rpc.Account.ChangeJsonApiAddr.Response {
+        val encoded = Service.accountChangeJsonApiAddr(Rpc.Account.ChangeJsonApiAddr.Request.ADAPTER.encode(request))
+        val response = Rpc.Account.ChangeJsonApiAddr.Response.ADAPTER.decode(encoded)
+        val error = response.error
+        if (error != null && error.code != Rpc.Account.ChangeJsonApiAddr.Response.Error.Code.NULL) {
+            throw Exception(error.description)
+        } else {
+            return response
+        }
+    }
+
+    override fun accountLocalLinkListApps(request: Rpc.Account.LocalLink.ListApps.Request): Rpc.Account.LocalLink.ListApps.Response {
+        val encoded = Service.accountLocalLinkListApps(Rpc.Account.LocalLink.ListApps.Request.ADAPTER.encode(request))
+        val response = Rpc.Account.LocalLink.ListApps.Response.ADAPTER.decode(encoded)
+        val error = response.error
+        if (error != null && error.code != Rpc.Account.LocalLink.ListApps.Response.Error.Code.NULL) {
+            throw Exception(error.description)
+        } else {
+            return response
+        }
+    }
+
+    override fun accountLocalLinkCreateApp(request: Rpc.Account.LocalLink.CreateApp.Request): Rpc.Account.LocalLink.CreateApp.Response {
+        val encoded = Service.accountLocalLinkCreateApp(Rpc.Account.LocalLink.CreateApp.Request.ADAPTER.encode(request))
+        val response = Rpc.Account.LocalLink.CreateApp.Response.ADAPTER.decode(encoded)
+        val error = response.error
+        if (error != null && error.code != Rpc.Account.LocalLink.CreateApp.Response.Error.Code.NULL) {
+            throw Exception(error.description)
+        } else {
+            return response
+        }
+    }
+
+    override fun accountLocalLinkRevokeApp(request: Rpc.Account.LocalLink.RevokeApp.Request): Rpc.Account.LocalLink.RevokeApp.Response {
+        val encoded = Service.accountLocalLinkRevokeApp(Rpc.Account.LocalLink.RevokeApp.Request.ADAPTER.encode(request))
+        val response = Rpc.Account.LocalLink.RevokeApp.Response.ADAPTER.decode(encoded)
+        val error = response.error
+        // An unknown app counts as already revoked.
+        if (error != null && error.code != Rpc.Account.LocalLink.RevokeApp.Response.Error.Code.NULL &&
+            error.code != Rpc.Account.LocalLink.RevokeApp.Response.Error.Code.NOT_FOUND
+        ) {
+            throw Exception(error.description)
+        } else {
+            return response
+        }
+    }
+
     override fun accountMigrate(request: Rpc.Account.Migrate.Request): Rpc.Account.Migrate.Response {
         val encoded = Service.accountMigrate(Rpc.Account.Migrate.Request.ADAPTER.encode(request))
         val response = Rpc.Account.Migrate.Response.ADAPTER.decode(encoded)

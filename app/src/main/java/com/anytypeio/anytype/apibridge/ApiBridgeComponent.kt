@@ -17,7 +17,7 @@ import com.anytypeio.anytype.domain.multiplayer.SpaceViewSubscriptionContainer
 import com.anytypeio.anytype.domain.`object`.FetchObject
 import com.anytypeio.anytype.domain.platform.InitialParamsProvider
 import com.anytypeio.anytype.domain.workspace.SpaceManager
-import com.anytypeio.anytype.middleware.localapi.LocalApiControl
+import com.anytypeio.anytype.middleware.interactor.Middleware
 import dagger.Component
 import dagger.Lazy
 import dagger.Module
@@ -26,8 +26,8 @@ import javax.inject.Singleton
 
 /**
  * Builds the [ApiBridgeInstaller]. The app creates it once per process, in
- * `Application.onCreate`. The adapters hold their middleware dependencies through [Lazy], and
- * [LocalApiControl] only wraps the gomobile calls, so building the component starts nothing.
+ * `Application.onCreate`. The adapters hold their middleware dependencies through [Lazy], so
+ * building the component starts nothing.
  */
 @Component(
     dependencies = [ApiBridgeDependencies::class],
@@ -50,7 +50,7 @@ object ApiBridgeModule {
     @JvmStatic
     @Provides
     @Singleton
-    fun provideGateway(): LocalApiGateway = LocalApiControlGateway(LocalApiControl())
+    fun provideGateway(middleware: Lazy<Middleware>): LocalApiGateway = MiddlewareLocalApiGateway(middleware)
 
     @JvmStatic
     @Provides
@@ -143,4 +143,5 @@ interface ApiBridgeDependencies : ComponentDependencies {
     fun preferredSpaceIdHolder(): PreferredSpaceIdHolder
     fun blockRepository(): BlockRepository
     fun dispatchers(): AppCoroutineDispatchers
+    fun middleware(): Middleware
 }

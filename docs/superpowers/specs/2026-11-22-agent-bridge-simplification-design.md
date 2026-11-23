@@ -225,3 +225,12 @@ from the old prefs file and no compatibility code.
   on the controller mutex or start the account. The locking of the controller is unchanged.
 - **Backup.** The data extraction rules exclude `datastore/api_bridge_approvals.json` from
   cloud backup and device transfer, in place of the old prefs file.
+
+## Follow-up (2026-11-23): heart calls go through MiddlewareService
+
+`HeartCalls` and `LocalApiControl` rebuilt, for four RPCs, the layer every other heart call already
+goes through. `ChangeJsonApiAddr` and `LocalLink.ListApps/CreateApp/RevokeApp` are now in
+`MiddlewareService` and `MiddlewareServiceImplementation` like the rest, with `Middleware`
+methods on top (`LocalApiApp` in core-models), and the bridge's gateway adapter calls
+`Middleware`. A revoke of an unknown key still counts as done: the service implementation accepts
+`NOT_FOUND`.

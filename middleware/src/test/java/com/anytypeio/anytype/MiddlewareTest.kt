@@ -1,5 +1,8 @@
 package com.anytypeio.anytype
 
+import kotlin.test.assertNull
+import kotlin.test.assertFailsWith
+import com.anytypeio.anytype.core_models.LocalApiApp
 import anytype.ResponseEvent
 import anytype.Rpc
 import anytype.model.Block
@@ -670,5 +673,81 @@ class MiddlewareTest {
 
         verify(service, times(1)).blockListSetFields(request)
         verifyNoMoreInteractions(service)
+    }
+
+    @Test
+    fun `json api address change returns the bound address, or null when closing`() {
+        val open = Rpc.Account.ChangeJsonApiAddr.Request(listenAddr = "127.0.0.1:0")
+        val close = Rpc.Account.ChangeJsonApiAddr.Request(listenAddr = "")
+        service.stub {
+            on { accountChangeJsonApiAddr(open) } doReturn Rpc.Account.ChangeJsonApiAddr.Response(
+                status = anytype.Event.Account.JsonApiStatus(success = true, listenAddr = "127.0.0.1:4242")
+            )
+            on { accountChangeJsonApiAddr(close) } doReturn Rpc.Account.ChangeJsonApiAddr.Response()
+        }
+
+        assertEquals("127.0.0.1:4242", middleware.accountChangeJsonApiAddr("127.0.0.1:0"))
+        assertNull(middleware.accountChangeJsonApiAddr(""))
+    }
+
+    @Test
+    fun `json api address change throws when heart could not bind`() {
+        val request = Rpc.Account.ChangeJsonApiAddr.Request(listenAddr = "127.0.0.1:0")
+        service.stub {
+            on { accountChangeJsonApiAddr(request) } doReturn Rpc.Account.ChangeJsonApiAddr.Response(
+                status = anytype.Event.Account.JsonApiStatus(success = false, listenAddr = "127.0.0.1:0", error = "in use")
+            )
+        }
+
+        assertFailsWith<IllegalStateException> { middleware.accountChangeJsonApiAddr("127.0.0.1:0") }
+    }
+
+    @Test
+    fun `local api apps are listed`() {
+        service.stub {
+            on { accountLocalLinkListApps(Rpc.Account.LocalLink.ListApps.Request()) } doReturn
+                Rpc.Account.LocalLink.ListApps.Response(
+                    app = listOf(anytype.model.Account.Auth.AppInfo(appHash = "h", appName = "n", appKey = "k", createdAt = 42))
+                )
+        }
+
+        assertEquals(listOf(LocalApiApp("h", "n", "k", 42)), middleware.accountLocalLinkListApps())
+    }
+
+    @Test
+    fun `local api app creation sends the scope and grant`() {
+        fun request(grant: anytype.model.Account.Auth.AppGrant) = Rpc.Account.LocalLink.CreateApp.Request(
+            app = anytype.model.Account.Auth.AppInfo(
+                appName = "client",
+                scope = anytype.model.Account.Auth.LocalApiScope.JsonAPI,
+                grant = grant
+            )
+        )
+        val all = request(anytype.model.Account.Auth.AppGrant(allSpaces = true, perm = anytype.model.Account.Auth.AppGrant.Perm.ReadWrite))
+        val some = request(
+            anytype.model.Account.Auth.AppGrant(spaceIds = listOf("s1"), allSpaces = false, perm = anytype.model.Account.Auth.AppGrant.Perm.Read)
+        )
+        service.stub {
+            on { accountLocalLinkCreateApp(all) } doReturn Rpc.Account.LocalLink.CreateApp.Response(appKey = "k1")
+            on { accountLocalLinkCreateApp(some) } doReturn Rpc.Account.LocalLink.CreateApp.Response(appKey = "k2")
+        }
+
+        assertEquals("k1", middleware.accountLocalLinkCreateApp("client", readWrite = true, spaceIds = null))
+        assertEquals("k2", middleware.accountLocalLinkCreateApp("client", readWrite = false, spaceIds = listOf("s1")))
+        assertFailsWith<IllegalArgumentException> {
+            middleware.accountLocalLinkCreateApp("client", readWrite = true, spaceIds = emptyList())
+        }
+    }
+
+    @Test
+    fun `local api app revoke calls heart`() {
+        val request = Rpc.Account.LocalLink.RevokeApp.Request(appHash = "h")
+        service.stub {
+            on { accountLocalLinkRevokeApp(request) } doReturn Rpc.Account.LocalLink.RevokeApp.Response()
+        }
+
+        middleware.accountLocalLinkRevokeApp("h")
+
+        verify(service).accountLocalLinkRevokeApp(request)
     }
 }

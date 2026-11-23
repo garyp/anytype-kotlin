@@ -1,5 +1,6 @@
 package com.anytypeio.anytype.apibridge
 
+import com.anytypeio.anytype.core_models.LocalApiApp
 import com.anytypeio.anytype.core_models.ObjectWrapper
 import com.anytypeio.anytype.core_models.Relations
 import com.anytypeio.anytype.core_models.restrictions.SpaceStatus
@@ -11,8 +12,7 @@ import com.anytypeio.anytype.domain.base.BaseUseCase
 import com.anytypeio.anytype.domain.base.Either
 import com.anytypeio.anytype.domain.config.ConfigStorage
 import com.anytypeio.anytype.domain.multiplayer.SpaceViewSubscriptionContainer
-import com.anytypeio.anytype.middleware.localapi.LocalApiApp
-import com.anytypeio.anytype.middleware.localapi.LocalApiControl
+import com.anytypeio.anytype.middleware.interactor.Middleware
 import dagger.Lazy
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -191,11 +191,11 @@ class ApiBridgeInstallerTest {
 
     @Test
     fun gatewayAdapterPassesCreateAppThrough() {
-        val control = mock<LocalApiControl> {
-            on { createApp("client", true, listOf("space.a")) } doReturn "k"
-            on { createApp("client", false, null) } doReturn "k2"
+        val middleware = mock<Middleware> {
+            on { accountLocalLinkCreateApp("client", true, listOf("space.a")) } doReturn "k"
+            on { accountLocalLinkCreateApp("client", false, null) } doReturn "k2"
         }
-        val gateway = LocalApiControlGateway(control)
+        val gateway = MiddlewareLocalApiGateway { middleware }
 
         assertEquals("k", gateway.createApp("client", true, listOf("space.a")))
         assertEquals("k2", gateway.createApp("client", false, null))
@@ -203,16 +203,16 @@ class ApiBridgeInstallerTest {
 
     @Test
     fun gatewayAdapterDelegatesOtherCalls() {
-        val control = mock<LocalApiControl> {
-            on { setListenAddr("127.0.0.1:0") } doReturn "127.0.0.1:5555"
-            on { listApps() } doReturn listOf(LocalApiApp("h", "n", "k", 1L))
+        val middleware = mock<Middleware> {
+            on { accountChangeJsonApiAddr("127.0.0.1:0") } doReturn "127.0.0.1:5555"
+            on { accountLocalLinkListApps() } doReturn listOf(LocalApiApp("h", "n", "k", 1L))
         }
-        val gateway = LocalApiControlGateway(control)
+        val gateway = MiddlewareLocalApiGateway { middleware }
 
         assertEquals("127.0.0.1:5555", gateway.setListenAddr("127.0.0.1:0"))
         assertEquals(listOf(GatewayApp("h", "n", "k", 1L)), gateway.listApps())
         gateway.revokeApp("h")
-        verify(control).revokeApp("h")
+        verify(middleware).accountLocalLinkRevokeApp("h")
     }
 
     @Test

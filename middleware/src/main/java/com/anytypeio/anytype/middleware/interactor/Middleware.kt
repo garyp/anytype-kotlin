@@ -6,6 +6,7 @@ import anytype.Rpc.PushNotification.RegisterToken.Platform
 import anytype.model.Block
 import anytype.model.ParticipantPermissionChange
 import anytype.model.Range
+import com.anytypeio.anytype.core_models.LocalApiApp
 import com.anytypeio.anytype.core_models.AccountSetup
 import com.anytypeio.anytype.core_models.AccountStatus
 import com.anytypeio.anytype.core_models.AppState
@@ -66,6 +67,10 @@ import com.anytypeio.anytype.middleware.BuildConfig
 import com.anytypeio.anytype.middleware.auth.toAccountSetup
 import com.anytypeio.anytype.middleware.const.Constants
 import com.anytypeio.anytype.middleware.interactor.events.payload
+import com.anytypeio.anytype.middleware.mappers.MAccountAuthAppGrant
+import com.anytypeio.anytype.middleware.mappers.MAccountAuthAppGrantPerm
+import com.anytypeio.anytype.middleware.mappers.MAccountAuthAppInfo
+import com.anytypeio.anytype.middleware.mappers.MAccountAuthLocalApiScope
 import com.anytypeio.anytype.middleware.mappers.MDVFilter
 import com.anytypeio.anytype.middleware.mappers.MDetail
 import com.anytypeio.anytype.middleware.mappers.MNetworkMode
@@ -206,6 +211,69 @@ class Middleware @Inject constructor(
         )
         logRequestIfDebug(request)
         val (response, time) = measureTimedValue { service.accountStop(request) }
+        logResponseIfDebug(response, time)
+    }
+
+    /**
+     * Binds heart's local JSON API to [addr] and returns the address it bound, or null when
+     * [addr] is empty, which closes it.
+     */
+    @Throws(Exception::class)
+    fun accountChangeJsonApiAddr(addr: String): String? {
+        val request = Rpc.Account.ChangeJsonApiAddr.Request(listenAddr = addr)
+        logRequestIfDebug(request)
+        val (response, time) = measureTimedValue { service.accountChangeJsonApiAddr(request) }
+        logResponseIfDebug(response, time)
+        if (addr.isEmpty()) return null
+        val status = response.status
+            ?: throw IllegalStateException("ChangeJsonApiAddr returned no status for \"$addr\"")
+        check(status.success) { "JSON API bind failed on ${status.listenAddr}: ${status.error}" }
+        return status.listenAddr
+    }
+
+    @Throws(Exception::class)
+    fun accountLocalLinkListApps(): List<LocalApiApp> {
+        val request = Rpc.Account.LocalLink.ListApps.Request()
+        logRequestIfDebug(request)
+        val (response, time) = measureTimedValue { service.accountLocalLinkListApps(request) }
+        logResponseIfDebug(response, time)
+        return response.app.map {
+            LocalApiApp(appHash = it.appHash, appName = it.appName, appKey = it.appKey, createdAt = it.createdAt)
+        }
+    }
+
+    /**
+     * Creates a key for heart's local JSON API and returns it. [spaceIds] null grants every
+     * space; an empty list is rejected.
+     */
+    @Throws(Exception::class)
+    fun accountLocalLinkCreateApp(name: String, readWrite: Boolean, spaceIds: List<String>?): String {
+        require(spaceIds == null || spaceIds.isNotEmpty()) {
+            "spaceIds must be null (all spaces) or non-empty"
+        }
+        val request = Rpc.Account.LocalLink.CreateApp.Request(
+            app = MAccountAuthAppInfo(
+                appName = name,
+                scope = MAccountAuthLocalApiScope.JsonAPI,
+                grant = MAccountAuthAppGrant(
+                    spaceIds = spaceIds.orEmpty(),
+                    allSpaces = spaceIds == null,
+                    perm = if (readWrite) MAccountAuthAppGrantPerm.ReadWrite else MAccountAuthAppGrantPerm.Read
+                )
+            )
+        )
+        logRequestIfDebug(request)
+        val (response, time) = measureTimedValue { service.accountLocalLinkCreateApp(request) }
+        logResponseIfDebug(response, time)
+        return response.appKey
+    }
+
+    /** Revokes a key for heart's local JSON API. An unknown key counts as already revoked. */
+    @Throws(Exception::class)
+    fun accountLocalLinkRevokeApp(appHash: String) {
+        val request = Rpc.Account.LocalLink.RevokeApp.Request(appHash = appHash)
+        logRequestIfDebug(request)
+        val (response, time) = measureTimedValue { service.accountLocalLinkRevokeApp(request) }
         logResponseIfDebug(response, time)
     }
 

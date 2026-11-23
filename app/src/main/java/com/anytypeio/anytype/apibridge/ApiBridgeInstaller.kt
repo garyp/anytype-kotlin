@@ -10,7 +10,7 @@ import com.anytypeio.anytype.core_models.restrictions.SpaceStatus
 import com.anytypeio.anytype.feature_os_widgets.presentation.MiddlewareLaunchResult
 import com.anytypeio.anytype.feature_os_widgets.presentation.awaitFirstSpacesEmission
 import com.anytypeio.anytype.feature_os_widgets.presentation.launchMiddlewareForConfig
-import com.anytypeio.anytype.middleware.localapi.LocalApiControl
+import com.anytypeio.anytype.middleware.interactor.Middleware
 import dagger.Lazy
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
@@ -27,9 +27,8 @@ import timber.log.Timber
  *
  * [install] must run exactly once per process, synchronously in `Application.onCreate`, so the
  * bridge service never sees a half-installed bridge. It does no disk or network I/O: the
- * adapters hold their middleware dependencies through [Lazy] (and [LocalApiControl] is a plain
- * wrapper over the gomobile calls), touching them only when the bridge calls them, which the
- * bridge does off the main thread.
+ * adapters hold their middleware dependencies through [Lazy], touching them only when the bridge
+ * calls them, which the bridge does off the main thread.
  */
 class ApiBridgeInstaller @Inject constructor(
     private val gateway: LocalApiGateway,
@@ -41,21 +40,21 @@ class ApiBridgeInstaller @Inject constructor(
     }
 }
 
-/** [LocalApiGateway] over heart's local JSON API control calls. */
-class LocalApiControlGateway(
-    private val control: LocalApiControl
+/** [LocalApiGateway] over heart's local JSON API calls in [Middleware]. */
+class MiddlewareLocalApiGateway(
+    private val middleware: Lazy<Middleware>
 ) : LocalApiGateway {
 
-    override fun setListenAddr(addr: String): String? = control.setListenAddr(addr)
+    override fun setListenAddr(addr: String): String? = middleware.get().accountChangeJsonApiAddr(addr)
 
-    override fun listApps(): List<GatewayApp> = control.listApps().map {
+    override fun listApps(): List<GatewayApp> = middleware.get().accountLocalLinkListApps().map {
         GatewayApp(appHash = it.appHash, appName = it.appName, appKey = it.appKey, createdAt = it.createdAt)
     }
 
     override fun createApp(name: String, readWrite: Boolean, spaceIds: List<String>?): String =
-        control.createApp(name, readWrite, spaceIds)
+        middleware.get().accountLocalLinkCreateApp(name, readWrite, spaceIds)
 
-    override fun revokeApp(appHash: String) = control.revokeApp(appHash)
+    override fun revokeApp(appHash: String) = middleware.get().accountLocalLinkRevokeApp(appHash)
 }
 
 /**
