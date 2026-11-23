@@ -3,8 +3,6 @@ package com.anytypeio.anytype.apibridge
 import android.content.Context
 import android.os.Build
 import androidx.annotation.VisibleForTesting
-import java.net.InetSocketAddress
-import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineDispatcher
@@ -106,24 +104,10 @@ object ApiBridge {
             approvals = approvals,
             callerApprovals = callerApprovalsOverride
                 ?: CallerVerifier(app.packageManager, approvals),
-            probe = ::probe,
             dispatcher = Dispatchers.IO,
             idle = ::idle,
             retryScope = backgroundScope
         ).also { controller = it }
-    }
-
-    /** True when something accepts a TCP connection at `host:port` within 300 ms. */
-    internal fun probe(addr: String): Boolean {
-        val i = addr.lastIndexOf(':')
-        if (i <= 0) return false
-        val port = addr.substring(i + 1).toIntOrNull() ?: return false
-        return try {
-            Socket().use { it.connect(InetSocketAddress(addr.substring(0, i), port), PROBE_TIMEOUT_MS) }
-            true
-        } catch (e: Exception) {
-            false
-        }
     }
 
     @VisibleForTesting
@@ -141,6 +125,5 @@ object ApiBridge {
         inFlightConnects.clear()
     }
 
-    private const val PROBE_TIMEOUT_MS = 300
     internal const val CONNECT_TIMEOUT_MS = 45_000L
 }

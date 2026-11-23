@@ -115,11 +115,9 @@ class BridgeControllerTest {
     private lateinit var launcher: FakeLauncher
     private lateinit var approvals: AppApprovals
     private val approved = mutableMapOf<Pair<Int, String>, Approval>()
-    private var probeResult = true
 
     /** False once the last client has unbound. */
     private var bound = true
-    private val probed = mutableListOf<String>()
 
     @Before
     fun setUp() {
@@ -128,9 +126,7 @@ class BridgeControllerTest {
         launcher = FakeLauncher()
         approvals = AppApprovals(context)
         approved.clear()
-        probeResult = true
         bound = true
-        probed.clear()
     }
 
     private fun approval(
@@ -160,7 +156,6 @@ class BridgeControllerTest {
             approvals = approvals,
             callerApprovals = callerApprovals,
             idle = { !bound },
-            probe = { addr -> probed.add(addr); probeResult },
             dispatcher = dispatcher,
             retryScope = backgroundScope
         )
@@ -197,7 +192,7 @@ class BridgeControllerTest {
     private fun ioController() = BridgeController(
         gateway = gateway, launcher = launcher, approvals = approvals,
         callerApprovals = callerApprovals,
-        idle = { false }, probe = { true }, dispatcher = Dispatchers.IO,
+        idle = { false }, dispatcher = Dispatchers.IO,
         retryScope = CoroutineScope(Dispatchers.IO)
     )
 
@@ -323,19 +318,6 @@ class BridgeControllerTest {
     }
 
     @Test
-    fun staleListenerIsRebound() = runTest {
-        approve(1000, approval())
-        val c = controller()
-        val first = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
-        assertEquals("http://127.0.0.1:40000", first.baseUrl)
-        probeResult = false
-        val second = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
-        assertEquals(listOf("127.0.0.1:40000"), probed)
-        assertEquals(listOf(BridgeController.LISTEN, BridgeController.LISTEN), gateway.listenCalls)
-        assertEquals("http://127.0.0.1:40001", second.baseUrl)
-    }
-
-    @Test
     fun liveListenerIsReused() = runTest {
         approve(1000, approval())
         val c = controller()
@@ -343,7 +325,6 @@ class BridgeControllerTest {
         val second = c.connect(1000)
         assertEquals(first, second)
         assertEquals(1, gateway.listenCalls.size)
-        assertEquals(listOf("127.0.0.1:40000"), probed)
     }
 
     @Test
@@ -369,16 +350,13 @@ class BridgeControllerTest {
         approve(1000, approval())
         val c = controller()
         assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
-        probeResult = false
+        // A later account restart forces a new bind, which fails.
+        launcher.generation++
         gateway.failBinds = 1
         val failed = assertIs<BridgeController.ConnectResult.Error>(c.connect(1000))
         assertEquals(IApiBridge.API_FAILED, failed.code)
-        // Heart closed the old listener on the failed bind: the old address must not be reused
-        // even if something answered on it.
-        probeResult = true
-        probed.clear()
+        // Heart closed the old listener on the failed bind: the next connect binds again.
         val ok = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
-        assertTrue(probed.isEmpty())
         assertEquals(3, gateway.listenCalls.size)
         assertEquals("http://127.0.0.1:40001", ok.baseUrl)
     }
@@ -502,9 +480,7 @@ class BridgeControllerTest {
         c.onAllUnbound()
         assertEquals(2, gateway.listenCalls.size)
         bound = true
-        probed.clear()
         assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
-        assertTrue(probed.isEmpty())
         assertEquals(3, gateway.listenCalls.size)
     }
 
@@ -548,7 +524,6 @@ class BridgeControllerTest {
             approvals = approvals,
             callerApprovals = callerApprovals,
             idle = { false },
-            probe = { true },
             dispatcher = StandardTestDispatcher(testScheduler),
             retryScope = backgroundScope
         )
@@ -557,15 +532,14 @@ class BridgeControllerTest {
     }
 
     @Test
-    fun accountRestartRebindsEvenWhenOldPortAnswers() = runTest {
+    fun accountRestartRebinds() = runTest {
         approve(1000, approval())
         val c = controller()
         val first = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
         assertEquals("http://127.0.0.1:40000", first.baseUrl)
-        // Heart dropped the listener on an account restart; another app now answers on the old
-        // port, so the probe succeeds. The old address must never be handed out.
+        // Heart dropped the listener on an account restart, and another app may now hold the old
+        // port. The old address must never be handed out.
         launcher.generation++
-        probeResult = true
         val second = assertIs<BridgeController.ConnectResult.Ready>(c.connect(1000))
         assertEquals("http://127.0.0.1:40001", second.baseUrl)
         assertEquals(listOf(BridgeController.LISTEN, BridgeController.LISTEN), gateway.listenCalls)

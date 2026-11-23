@@ -20,7 +20,7 @@ import kotlinx.coroutines.withContext
  * approval for that account, sweep keys pending revocation, make sure heart's local API listens,
  * and hand out the caller's key. The mutex keeps the listener and key state whole: one bind at a
  * time, no duplicate keys, and no close of the listener in the middle of a connect. Blocking work
- * (gateway, approvals store, [probe]) runs on [dispatcher].
+ * (gateway, approvals store) runs on [dispatcher].
  *
  * [revokeApp] takes no lock, so it never waits behind a connect that is starting the account.
  * It still cannot leave a revoked app with a working key, because of the order of the steps on
@@ -44,8 +44,6 @@ class BridgeController(
     private val launcher: AccountLauncher,
     private val approvals: AppApprovals,
     private val callerApprovals: CallerApprovals,
-    /** True when something accepts connections at the given host:port. */
-    private val probe: (String) -> Boolean,
     private val dispatcher: CoroutineDispatcher,
     /** True when no client binding of any kind remains. */
     private val idle: () -> Boolean,
@@ -246,15 +244,16 @@ class BridgeController(
     }
 
     /**
-     * Reuses the cached address only while the account has not restarted since the bind and a
-     * probe answers. Heart drops its listener on every account start and stop, and any local app
-     * may then bind the old port: a probe alone would hand the caller that app's address.
+     * Reuses the cached address only while the account has not restarted since the bind. Heart
+     * drops its listener on every account start and stop, and any local app may then bind the old
+     * port: the old address would hand the caller that app's server. Every start and stop goes
+     * through [AccountLauncher.generation], and heart closes the listener on nothing else.
      */
     private fun ensureListening(): String {
         // Read before binding: a restart during the bind leaves a stale generation behind, so
         // the next connect binds again.
         val generation = launcher.generation()
-        listenAddr?.let { if (generation == listenGeneration && probe(it)) return it }
+        listenAddr?.let { if (generation == listenGeneration) return it }
         // A failed bind means heart has already closed the old listener.
         listenAddr = null
         val bound = gateway.setListenAddr(LISTEN)
